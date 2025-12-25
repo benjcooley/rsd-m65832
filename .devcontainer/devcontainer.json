@@ -1,0 +1,20 @@
+{
+    "name": "rsd-devcontainer",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "mshr-h.veriloghdl"
+            ]
+        }
+    },
+    "remoteEnv": {
+        "RSD_GCC_PATH": "/usr/local/riscv32/bin",
+        "RSD_GCC_PREFIX": "riscv32-unknown-elf-",
+        "RSD_VERILATOR_PATH": "/usr/local/bin/verilator"
+    },
+    "postCreateCommand": ""
+}
