@@ -120,7 +120,11 @@ module MemoryIssueStage(
             mulDivUnit.divAcquire[i] = 
                 !clear && valid[i] && !flush[i] && 
                 issuedData[i].memOpInfo.opType == MEM_MOP_TYPE_DIV;
-            mulDivUnit.acquireActiveListPtr[i] = issuedData[i].activeListPtr;
+            mulDivUnit.acquireData[i].activeListPtr = issuedData[i].activeListPtr;
+            // mulDivUnit.acquireData[i].loadQueueRecoveryPtr = issuedData[i].loadQueueRecoveryPtr;
+            // mulDivUnit.acquireData[i].storeQueueRecoveryPtr = issuedData[i].storeQueueRecoveryPtr;
+            // mulDivUnit.acquireData[i].pc = issuedData[i].pc;
+            mulDivUnit.acquireData[i].opDst = issuedData[i].opDst;
         end
 `endif
         port.nextStage = nextStage;

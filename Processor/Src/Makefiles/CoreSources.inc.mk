@@ -36,6 +36,7 @@ TYPES = \
 	Pipeline/PipelineTypes.sv \
 	IO/IO_UnitTypes.sv \
 	Privileged/CSR_UnitTypes.sv \
+	MulDivUnit/MulDivUnitTypes.sv \
 	Debug/DebugTypes.sv \
 
 # CORE_MODULES specifies files that defines the RSD core.

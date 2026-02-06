@@ -146,8 +146,11 @@ module ActiveList(
     //
     // --- Execution result write
     //
-    logic we[ISSUE_WIDTH];
-    ActiveListWriteData writeData[ISSUE_WIDTH];
+
+    localparam  EXEC_RESULT_WRITE_NUM = ISSUE_WIDTH + MULDIV_ISSUE_WIDTH;
+
+    logic we[EXEC_RESULT_WRITE_NUM];
+    ActiveListWriteData writeData[EXEC_RESULT_WRITE_NUM];
     always_comb begin
         for (int i = 0; i < INT_ISSUE_WIDTH; i++) begin
             we[i] = port.intWrite[i];
@@ -163,10 +166,14 @@ module ActiveList(
             we[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH)] = port.memWrite[i];
             writeData[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH)] = port.memWriteData[i];
         end
+        for (int i = 0; i < MULDIV_ISSUE_WIDTH; i++) begin
+            we[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH+MEM_ISSUE_WIDTH)] = port.divWrite[i];
+            writeData[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH+MEM_ISSUE_WIDTH)] = port.divWriteData[i];
+        end
 `ifdef RSD_MARCH_FP_PIPE
         for (int i = 0; i < FP_ISSUE_WIDTH; i++) begin
-            we[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH+MEM_ISSUE_WIDTH)] = port.fpWrite[i];
-            writeData[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH+MEM_ISSUE_WIDTH)] = port.fpWriteData[i];
+            we[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH+MEM_ISSUE_WIDTH+MULDIV_ISSUE_WIDTH)] = port.fpWrite[i];
+            writeData[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH+MEM_ISSUE_WIDTH+MULDIV_ISSUE_WIDTH)] = port.fpWriteData[i];
         end
 `endif
     end
@@ -186,7 +193,7 @@ module ActiveList(
     } RecoveryRegPath;
 
     ActiveListCountPath oldestAge;
-    ActiveListCountPath writeAge[ISSUE_WIDTH];
+    ActiveListCountPath writeAge[EXEC_RESULT_WRITE_NUM];
     logic exceptionDetected;
     RefetchType refetchType;
     IssueLaneIndexPath exceptionIndex;
@@ -230,14 +237,14 @@ module ActiveList(
         refetchType = REFETCH_TYPE_THIS_PC;
         startRecoveryAtCommit = FALSE;
 
-        for (int i = 0; i < ISSUE_WIDTH; i++) begin
+        for (int i = 0; i < EXEC_RESULT_WRITE_NUM; i++) begin
             writeAge[i] = ActiveListPtrToAge(writeData[i].ptr, headPtr);
 
             if (we[i] && 
                 !(writeData[i].state inside {EXEC_STATE_NOT_FINISHED, EXEC_STATE_SUCCESS})
             ) begin
                 // Record the oldest recovery point.
-                if (!nextRecoveryReg.valid || writeAge[i] < oldestAge) begin
+                if (!nextRecoveryReg.valid || writeAge[i] < oldestAge) begin    
                     oldestAge = writeAge[i];
                     nextRecoveryReg.valid = TRUE;
                     nextRecoveryReg.ptr = writeData[i].ptr;
@@ -326,7 +333,7 @@ module ActiveList(
     // --- ExecutionState
     //
 
-    parameter EXEC_STATE_WRITE_NUM = RENAME_WIDTH + ISSUE_WIDTH;
+    parameter EXEC_STATE_WRITE_NUM = RENAME_WIDTH + EXEC_RESULT_WRITE_NUM;
     logic               esWE[EXEC_STATE_WRITE_NUM];
     ActiveListIndexPath esWA[EXEC_STATE_WRITE_NUM];
     ActiveListIndexPath esRA[COMMIT_WIDTH];
@@ -365,7 +372,7 @@ module ActiveList(
                 esWV[i] = FALSE;
             end
 
-            for (int i = 0; i < ISSUE_WIDTH; i++ ) begin
+            for (int i = 0; i < EXEC_RESULT_WRITE_NUM; i++ ) begin
                 esWE[(i+RENAME_WIDTH)] = we[i];
                 esWA[(i+RENAME_WIDTH)] = writeData[i].ptr;
                 //Rwステージで検出された例外はコミットステージで再度検出されないようにExecStateをEXEC_STATE_SUCCESSにしておく必要がある
@@ -435,8 +442,8 @@ module ActiveList(
             end
 
             for (int i = 0; i < FP_ISSUE_WIDTH; i++ ) begin
-                ffsWE[(i+RENAME_WIDTH)] = we[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH+MEM_ISSUE_WIDTH)];
-                ffsWA[(i+RENAME_WIDTH)] = writeData[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH+MEM_ISSUE_WIDTH)].ptr;
+                ffsWE[(i+RENAME_WIDTH)] = we[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH+MEM_ISSUE_WIDTH+MULDIV_ISSUE_WIDTH)];
+                ffsWA[(i+RENAME_WIDTH)] = writeData[(i+INT_ISSUE_WIDTH+COMPLEX_ISSUE_WIDTH+MEM_ISSUE_WIDTH+MULDIV_ISSUE_WIDTH)].ptr;
                 ffsWV[(i+RENAME_WIDTH)] = port.fpFFlagsData[i];
             end
         end
@@ -502,7 +509,7 @@ module ActiveList(
                 esRefWV[i] = EXEC_STATE_NOT_FINISHED;
             end
 
-            for (int i = 0; i < ISSUE_WIDTH; i++ ) begin
+            for (int i = 0; i < EXEC_RESULT_WRITE_NUM; i++ ) begin
                 esRefWE[(i+RENAME_WIDTH)] = we[i];
                 esRefWA[(i+RENAME_WIDTH)] = writeData[i].ptr;
                 //Rwステージで検出された例外はコミットステージで再度検出されないようにExecStateをEXEC_STATE_SUCCESSにしておく必要がある

@@ -28,7 +28,6 @@ module MemoryTagAccessStage(
     MemoryExecutionStageIF.NextStage prev,
     SchedulerIF.MemoryTagAccessStage scheduler,
     LoadStoreUnitIF.MemoryTagAccessStage loadStoreUnit,
-    MulDivUnitIF.MemoryTagAccessStage mulDivUnit,    
     RecoveryManagerIF.MemoryTagAccessStage recovery,
     ControllerIF.MemoryTagAccessStage ctrl,
     AMOCacheIF.MemoryTagAccessStage amoCache,
@@ -152,6 +151,11 @@ module MemoryTagAccessStage(
     logic ldMSHR_Allocated[LOAD_ISSUE_WIDTH];
     logic ldMSHR_Hit[LOAD_ISSUE_WIDTH];
     DataPath ldMSHR_EntryID[LOAD_ISSUE_WIDTH];
+
+
+`ifdef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
+    DivRecordEntry divRecordData[LOAD_ISSUE_WIDTH];
+`endif
 
     always_comb begin
         update_is_reserved_byLR = FALSE;
@@ -291,12 +295,10 @@ module MemoryTagAccessStage(
             // Sends to the load queue whether the load executed in this cycle is valid.
             loadStoreUnit.executedLoadRegValid[i] = ldRegValid[i];
             
-            `ifdef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
-                if (isDiv[i] && ldRegValid[i]) begin
-                    /*ldPipeReg[i].replay && */
-                    ldRegValid[i] = mulDivUnit.divFinished[i];
-                end
-            `endif
+`ifdef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
+            divRecordData[i].activeListPtr = ldIqData[i].activeListPtr;
+            divRecordData[i].opDst = ldIqData[i].opDst;
+`endif
 
             // Pipeline レジスタ書き込み
             ldNextStage[i].regValid = ldRegValid[i];
@@ -383,7 +385,7 @@ module MemoryTagAccessStage(
             end
 `ifdef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
             else if (isDiv[i]) begin
-                ldNextStage[i].execState = mulDivUnit.divFinished[i] ? EXEC_STATE_SUCCESS : EXEC_STATE_NOT_FINISHED;
+                ldNextStage[i].execState = EXEC_STATE_NOT_FINISHED;
             end
 `endif 
             else begin
@@ -612,12 +614,20 @@ module MemoryTagAccessStage(
                     nextStage[i] = ldNextStage[i];
                     flush[i] = ldFlush[i];
                 end
+`ifdef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
+                scheduler.divRecordEntry[i] = ldUpdate[i] && ldRegValid[i] && isDiv[i];
+                scheduler.divRecordData[i] = divRecordData[i];
+`endif
             end
         `else
             for (int i = 0; i < LOAD_ISSUE_WIDTH; i++) begin
                 // Record instructions to the replay queue.
                 scheduler.memRecordEntry[i] = ldUpdate[i] && !ldRegValid[i];
                 scheduler.memRecordData[i] = ldRecordData[i];
+`ifdef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
+                scheduler.divRecordEntry[i] = ldUpdate[i] && ldRegValid[i] && isDiv[i];
+                scheduler.divRecordData[i] = divRecordData[i];
+`endif
                 nextStage[i] = ldNextStage[i];
                 flush[i] = ldFlush[i];
             end

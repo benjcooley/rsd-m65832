@@ -116,16 +116,6 @@ module ComplexIntegerRegisterReadStage(
 
             nextStage[i].replay = pipeReg[i].replay;
 
-            // divがこのステージ内でフラッシュされた場合：
-            // Dividerへの要求予約を取り消し，
-            // IQからdivを発行できるようにする 
-            if (iqData[i].opType == COMPLEX_MOP_TYPE_DIV) begin
-                nextStage[i].isFlushed = pipeReg[i].valid && flush[i];
-            end
-            else begin
-                nextStage[i].isFlushed = FALSE;
-            end
-            
             // レジスタ値&フラグ
             nextStage[i].operandA = registerFile.complexSrcRegDataA[i];
             nextStage[i].operandB = registerFile.complexSrcRegDataB[i];

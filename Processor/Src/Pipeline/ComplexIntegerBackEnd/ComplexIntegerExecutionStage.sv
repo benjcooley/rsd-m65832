@@ -166,19 +166,6 @@ module ComplexIntegerExecutionStage(
                 mulDivUnit.divReserved[i] && 
                 pipeReg[i].valid && isDiv[i] && 
                 fuOpA[i].valid && fuOpB[i].valid;
-
-            if (mulDivUnit.divFinished[i] &&
-                localPipeReg[i][COMPLEX_EXEC_STAGE_DEPTH-2].valid &&
-                localPipeReg[i][COMPLEX_EXEC_STAGE_DEPTH-2].complexQueueData.opType == COMPLEX_MOP_TYPE_DIV && 
-                localPipeReg[i][COMPLEX_EXEC_STAGE_DEPTH-2].regValid
-            ) begin 
-                // Divが除算器から結果を取得できたので，
-                // IQからのdivの発行を許可する 
-                mulDivUnit.divRelease[i] = TRUE;
-            end
-            else begin
-                mulDivUnit.divRelease[i] = FALSE;
-            end
 `endif
         end
     end
@@ -237,7 +224,11 @@ module ComplexIntegerExecutionStage(
                 = localPipeReg[i][COMPLEX_EXEC_STAGE_DEPTH-2].regValid;
 
             unique case ( localPipeReg[i][COMPLEX_EXEC_STAGE_DEPTH-2].complexQueueData.opType )
-            COMPLEX_MOP_TYPE_DIV: dataOut[i].data = mulDivUnit.divDataOut[i];
+            COMPLEX_MOP_TYPE_DIV: begin
+                // div result is directly written by MulDivUnit
+                dataOut[i].valid = FALSE;
+                dataOut[i].data  = '0;
+            end
             default: /* mul */    dataOut[i].data = mulDivUnit.mulDataOut[i];
             endcase
 
@@ -265,6 +256,13 @@ module ComplexIntegerExecutionStage(
                 !localPipeReg[i][0].regValid;
             scheduler.complexRecordData[i] =
                 localPipeReg[i][0].complexQueueData;
+            
+            scheduler.divRecordEntry[i] =
+                localPipeReg[i][0].valid &&
+                localPipeReg[i][0].regValid &&
+                localPipeReg[i][0].complexQueueData.opType == COMPLEX_MOP_TYPE_DIV;
+            scheduler.divRecordData[i].activeListPtr = localPipeReg[i][0].complexQueueData.activeListPtr;
+            scheduler.divRecordData[i].opDst = localPipeReg[i][0].complexQueueData.opDst;
         end
     end
 
@@ -284,14 +282,7 @@ module ComplexIntegerExecutionStage(
             nextLocalPipeReg[i][0].complexQueueData = pipeReg[i].complexQueueData;
 
             // Reg valid of local pipeline 
-            if (isDiv[i]) begin
-                nextLocalPipeReg[i][0].regValid = 
-                    pipeReg[i].replay && (mulDivUnit.divFinished[i]);
-            end
-            else begin
-                nextLocalPipeReg[i][0].regValid = regValid[i];
-            end
-            
+            nextLocalPipeReg[i][0].regValid = regValid[i];
 
             for (int j = 1; j < COMPLEX_EXEC_STAGE_DEPTH-1; j++) begin
 `ifndef RSD_DISABLE_DEBUG_REGISTER

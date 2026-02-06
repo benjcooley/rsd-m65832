@@ -232,7 +232,6 @@ typedef struct packed // ComplexIntegerExecutionStageRegPath
 
     logic valid;      // Valid flag. If this is 0, its op is treated as NOP.
     logic replay;
-    logic isFlushed;
     ComplexIssueQueueEntry complexQueueData;
 
     // register read out
@@ -379,6 +378,7 @@ typedef struct packed // MemoryRegisterWriteStageRegPath
     ExecutionState execState; // Execution status. See RenameLogicTypes.sv
     logic isStore;
     logic isLoad;
+    logic isDiv;
     
     logic zaamoReleaseMSHR;
 

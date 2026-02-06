@@ -73,6 +73,11 @@ interface RegisterFileIF( input logic clk, rst, rstStart );
     PRegDataPath  fpDstRegData  [ FP_ISSUE_WIDTH ];
 `endif
 
+    /* MulDiv Register Write */
+    logic divDstRegWE  [ MULDIV_ISSUE_WIDTH ];
+    PRegNumPath divDstRegNum  [ MULDIV_ISSUE_WIDTH ];
+    PRegDataPath divDstRegData  [ MULDIV_ISSUE_WIDTH ];
+
     modport RegisterFile(
     input 
         clk,
@@ -103,6 +108,9 @@ interface RegisterFileIF( input logic clk, rst, rstStart );
         fpDstRegNum,
         fpDstRegData,
 `endif
+        divDstRegWE,
+        divDstRegNum,
+        divDstRegData,
     output
         intSrcRegDataA,
         intSrcRegDataB,
@@ -188,6 +196,13 @@ interface RegisterFileIF( input logic clk, rst, rstStart );
         memDstRegWE,
         memDstRegNum,
         memDstRegData
+    );
+
+    modport MulDivUnit(
+    output
+        divDstRegWE,
+        divDstRegNum,
+        divDstRegData
     );
     
 endinterface : RegisterFileIF

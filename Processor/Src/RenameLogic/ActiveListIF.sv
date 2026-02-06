@@ -63,6 +63,10 @@ interface ActiveListIF( input logic clk, rst );
     FFlags_Path     fpFFlagsData[FP_ISSUE_WIDTH];
     FFlags_Path     fflagsData[COMMIT_WIDTH];
 `endif
+
+    logic divWrite[MULDIV_ISSUE_WIDTH];
+    ActiveListWriteData divWriteData[MULDIV_ISSUE_WIDTH];
+
     // Status of an active list.
     logic allocatable;
 
@@ -98,6 +102,8 @@ interface ActiveListIF( input logic clk, rst );
         fpWriteData,
         fpFFlagsData,
 `endif
+        divWrite,
+        divWriteData,
     output
 `ifdef RSD_MARCH_FP_PIPE
         fflagsData,
@@ -155,6 +161,12 @@ interface ActiveListIF( input logic clk, rst );
         fpFFlagsData
     );
 `endif
+
+    modport MulDivUnit(
+    output
+        divWrite,
+        divWriteData
+    );
 
     modport CommitStage(
     input

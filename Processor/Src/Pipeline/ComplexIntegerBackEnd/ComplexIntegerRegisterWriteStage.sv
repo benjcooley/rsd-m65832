@@ -107,7 +107,8 @@ module ComplexIntegerRegisterWriteStage(
                 alWriteData[i].state = EXEC_STATE_NOT_FINISHED;
             end
 
-            activeList.complexWrite[i] = update[i];
+            // div result is directly written by MulDivUnit
+            activeList.complexWrite[i] = update[i] && iqData[i].opType != COMPLEX_MOP_TYPE_DIV;
             activeList.complexWriteData[i] = alWriteData[i];
         end
 

@@ -112,6 +112,13 @@ module ReplayQueue(
         .rv(replayEntryOut)
     );
 
+    logic divRecordValidIn[ MULDIV_ISSUE_WIDTH ];
+    DivRecordEntry divRecordDataIn[ MULDIV_ISSUE_WIDTH ];
+    logic currentDivRecordValid [ MULDIV_ISSUE_WIDTH ];
+    DivRecordEntry currentDivRecordData [ MULDIV_ISSUE_WIDTH ];
+    logic nextDivRecordValid [ MULDIV_ISSUE_WIDTH ];
+    DivRecordEntry nextDivRecordData [ MULDIV_ISSUE_WIDTH ];
+
     // Valid information in replay queue
     logic replayEntryValidIn;
     logic replayEntryValidOut;
@@ -125,7 +132,7 @@ module ReplayQueue(
     ReplayQueueIntervalPath intervalCount;
     ReplayQueueIntervalPath nextIntervalCount;
 
-    // Flushed Op detection
+    // Flushed Op detectihon
     ReplayQueueCountPath canBeFlushedEntryCount;    //FlushedOpが存在している可能性があるエントリの個数
     ActiveListIndexPath flushRangeHeadPtr;  //フラッシュされた命令の範囲のhead
     ActiveListIndexPath flushRangeTailPtr;  //フラッシュされた命令の範囲のtail
@@ -139,6 +146,7 @@ module ReplayQueue(
 `ifdef RSD_MARCH_FP_PIPE 
     logic flushFP[ FP_ISSUE_WIDTH ];
 `endif
+    logic flushDiv[ MULDIV_ISSUE_WIDTH ];
 
 
     // Outputs are pipelined for timing optimization.
@@ -181,6 +189,19 @@ module ReplayQueue(
             replayReg <= nextReplay;
             intervalIn <= nextIntervalIn;
             intervalCount <= nextIntervalCount;
+        end
+    end
+
+    always_ff @ (posedge port.clk) begin
+        for (int i = 0; i < MULDIV_ISSUE_WIDTH; i++) begin
+            if (port.rst) begin
+                currentDivRecordValid[i] <= '0;
+                currentDivRecordData[i] <= '0;
+            end
+            else begin
+                currentDivRecordValid[i] <= nextDivRecordValid[i];
+                currentDivRecordData[i] <= nextDivRecordData[i];
+            end
         end
     end
 
@@ -370,6 +391,20 @@ module ReplayQueue(
             end
 `endif
         end
+        if (port.rst) begin
+            for (int i = 0; i < MULDIV_ISSUE_WIDTH; i++) begin
+                divRecordValidIn[i] = FALSE;
+            end
+        end
+        else begin
+            for (int i = 0; i < MULDIV_ISSUE_WIDTH; i++) begin
+                divRecordValidIn[i] = port.divRecordEntry[i];
+            end
+        end
+
+        for (int i = 0; i < MULDIV_ISSUE_WIDTH; i++) begin
+            divRecordDataIn[i] = port.divRecordData[i];
+        end
 
         // flush detection
         // There is a one-cycle delay for a flash range to be recorded in the registers, 
@@ -443,7 +478,15 @@ module ReplayQueue(
                             );
         end
 `endif
-
+        for (int i = 0; i < MULDIV_ISSUE_WIDTH; i++) begin
+            flushDiv[i] = SelectiveFlushDetector(
+                              recovery.toRecoveryPhase,
+                              recovery.flushRangeHeadPtr,
+                              recovery.flushRangeTailPtr,
+                              recovery.flushAllInsns,
+                              currentDivRecordData[i].activeListPtr
+                          );
+        end
 
         // To an input of ReplayQueue.
         if (port.rst) begin
@@ -527,30 +570,36 @@ module ReplayQueue(
                 popEntry = FALSE;
             end
 
-`ifdef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
-            for (int i = 0; i < MEM_ISSUE_WIDTH; i++) begin
-                if (
-                    replayEntryOut.memValid[i] && !flushMem[i] &&
-                    replayEntryOut.memData[i].memOpInfo.opType == MEM_MOP_TYPE_DIV &&
-                    mulDivUnit.divBusy[i]
-                ) begin
-                    popEntry = FALSE;
+            for (int i = 0; i < MULDIV_ISSUE_WIDTH; i++) begin
+                if (currentDivRecordValid[i] && !flushDiv[i] && mulDivUnit.divBusy[i] && currentDivRecordData[i].opDst.writeReg) begin
+                    for (int j = 0; j < INT_ISSUE_WIDTH; j++) begin
+                        if (replayEntryOut.intValid[j] && !flushInt[j] && IsSrcIncludeDst(replayEntryOut.intData[j].opSrc, currentDivRecordData[i].opDst)) begin
+                            popEntry = FALSE;
+                        end
+                    end
+`ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
+                    // mul inst may depend on div result
+                    for (int j = 0; j < COMPLEX_ISSUE_WIDTH; j++) begin
+                        if (replayEntryOut.complexValid[j] && !flushComplex[j] && IsSrcIncludeDst(replayEntryOut.complexData[j].opSrc, currentDivRecordData[i].opDst)) begin
+                            popEntry = FALSE;
+                        end
+                    end
+`endif
+                    for (int j = 0; j < MEM_ISSUE_WIDTH; j++) begin
+                        if (replayEntryOut.memValid[j] && !flushMem[j] && IsSrcIncludeDst(replayEntryOut.memData[j].opSrc, currentDivRecordData[i].opDst)) begin
+                            popEntry = FALSE;
+                        end
+                    end
+`ifdef RSD_MARCH_FP_PIPE
+                    for (int j = 0; j < FP_ISSUE_WIDTH; j++) begin
+                        if (replayEntryOut.fpValid[j] && !flushFP[j] && IsSrcIncludeDst(replayEntryOut.fpData[j].opSrc, currentDivRecordData[i].opDst)) begin
+                            popEntry = FALSE;
+                        end
+                    end
+`endif
                 end
             end
-`endif
-            
-`ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
-            for (int i = 0; i < COMPLEX_ISSUE_WIDTH; i++) begin 
-                if (replayEntryOut.complexValid[i] && !flushComplex[i] &&
-                    replayEntryOut.complexData[i].opType == COMPLEX_MOP_TYPE_DIV && 
-                    mulDivUnit.divBusy[i]   // Div unit is busy and wait it
-                ) begin 
-                    // Div interlock (stop issuing div while there is 
-                    // any divs in the complex pipeline including replay queue)
-                    popEntry = FALSE; 
-                end 
-            end 
-`endif
+
 `ifdef RSD_MARCH_FP_PIPE
             for (int i = 0; i < FP_ISSUE_WIDTH; i++) begin 
                 if (replayEntryOut.fpValid[i] && !flushFP[i] && 
@@ -595,6 +644,16 @@ module ReplayQueue(
             nextReplayEntry.fpData[i] = replayEntryOut.fpData[i];
         end
 `endif
+        for (int i = 0; i < MULDIV_ISSUE_WIDTH; i++) begin
+            if (divRecordValidIn[i]) begin
+                nextDivRecordValid[i] = TRUE;
+                nextDivRecordData[i] = divRecordDataIn[i];
+            end
+            else begin
+                nextDivRecordValid[i] = currentDivRecordValid[i] && !flushDiv[i] && mulDivUnit.divBusy[i];
+                nextDivRecordData[i] = currentDivRecordData[i];
+            end
+        end
 
         nextReplayEntry.replayInterval = replayEntryOut.replayInterval;
         nextReplay = (popEntry && replayEntryValidOut) ? TRUE : FALSE;
@@ -648,5 +707,18 @@ module ReplayQueue(
     always_comb begin
         recovery.replayQueueFlushedOpExist = (canBeFlushedEntryCount != 0);
     end
+
+    function logic IsSrcIncludeDst(
+        input
+            OpSrc opSrc,
+            OpDst opDst
+    );
+      return opSrc.phySrcRegNumA.regNum == opDst.phyDstRegNum.regNum
+            || opSrc.phySrcRegNumB.regNum == opDst.phyDstRegNum.regNum
+`ifdef RSD_MARCH_FP_PIPE
+            || opSrc.phySrcRegNumC.regNum == opDst.phyDstRegNum.regNum
+`endif
+            ;
+    endfunction : IsSrcIncludeDst
 
 endmodule : ReplayQueue

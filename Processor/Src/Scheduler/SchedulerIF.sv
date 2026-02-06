@@ -87,6 +87,9 @@ interface SchedulerIF( input logic clk, rst, rstStart );
     MemIssueQueueEntry  memReplayData[MEM_ISSUE_WIDTH];
     logic replay;
 
+    logic divRecordEntry[MULDIV_ISSUE_WIDTH];
+    DivRecordEntry divRecordData[MULDIV_ISSUE_WIDTH];
+
     // Stall scheduling
     logic stall;
 
@@ -170,6 +173,8 @@ interface SchedulerIF( input logic clk, rst, rstStart );
         fpRecordEntry,
         fpRecordData,
 `endif
+        divRecordEntry,
+        divRecordData,
     output
         intReplayEntry,
         intReplayData,
@@ -258,6 +263,11 @@ interface SchedulerIF( input logic clk, rst, rstStart );
     output
         complexRecordEntry,
         complexRecordData
+`ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
+        ,
+        divRecordEntry,
+        divRecordData
+`endif
     );
 `endif
 
@@ -297,6 +307,11 @@ interface SchedulerIF( input logic clk, rst, rstStart );
     output
         memRecordEntry,
         memRecordData
+`ifdef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
+        ,
+        divRecordEntry,
+        divRecordData
+`endif
     );
     
 endinterface : SchedulerIF

@@ -121,7 +121,8 @@ module MemoryRegisterWriteStage(
             alWriteData[i].pc = pipeReg[i].pc;
             alWriteData[i].dataAddr = pipeReg[i].addrOut;
 
-            activeList.memWrite[i] = update[i];
+            // div result is directly written by MulDivUnit
+            activeList.memWrite[i] = update[i] && !pipeReg[i].isDiv;
             activeList.memWriteData[i] = alWriteData[i];
         end
 

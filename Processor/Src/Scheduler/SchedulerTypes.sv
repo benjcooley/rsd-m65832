@@ -313,6 +313,13 @@ typedef struct packed // MemIssueQueueEntry
     PC_Path pc;
 } MemIssueQueueEntry;
 
+
+typedef struct packed // DivRecordEntry
+{
+    ActiveListIndexPath activeListPtr;
+    OpDst opDst;
+} DivRecordEntry;
+
 typedef struct packed // FPOpInfo
 {
     FPMicroOpSubType opType;
