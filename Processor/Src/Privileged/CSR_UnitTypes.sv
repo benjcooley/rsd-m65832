@@ -87,6 +87,8 @@ function automatic CSR_CAUSE_TrapCodePath ToTrapCodeFromExecState(ExecutionState
     endcase
 endfunction
 
+localparam CSR_TRAPVALUE_LANDING_PAD_FAIL = 2;
+
 localparam CSR_CAUSE_INTERRUPT_CODE_WIDTH = 5;
 typedef enum logic [CSR_CAUSE_INTERRUPT_CODE_WIDTH-1:0] {
     CSR_CAUSE_INTERRUPT_CODE_TIMER = 7,

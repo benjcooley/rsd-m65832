@@ -119,7 +119,7 @@ module CSR_Unit(
                 csrNext.mstatus.MPIE = csrNext.mstatus.MIE; // MIE の古い値
                 csrNext.mstatus.MIE = 0;    // グローバル割り込み許可を落とす
                 csrNext.mepc = ToAddrFromPC(port.excptCauseAddr); // 例外の発生元 PC を書き込む
-                csrNext.mtval = port.excptCauseDataAddr;// ECALL/EBREAK の場合は PC?
+                csrNext.mtval = port.excptCause == EXEC_STATE_FAULT_LPAD ? CSR_TRAPVALUE_LANDING_PAD_FAIL : port.excptCauseDataAddr; // ECALL/EBREAK の場合は PC?
                 
                 csrNext.mcause.isInterrupt = FALSE;
                 csrNext.mcause.code.trapCode = ToTrapCodeFromExecState(port.excptCause);
