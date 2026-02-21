@@ -29,6 +29,7 @@ LEVEL1_TESTS = \
 	test-RV32I-CSR \
 	test-RV32I-Timer \
 	test-RV32I-Fault \
+    test-RV32I-LandingPad \
 	test-RV32M-IntMulZynq \
 	test-RV32M-IntDivZynq \
 	test-RV32M-DividerTest \
@@ -172,6 +173,8 @@ test-RV32I-Fault:
 	$(RUN_TEST_OMIT_MSG) Verification/TestCode/Asm/Fault
 test-RV32I-MisalignedMemAccess:
 	$(RUN_TEST_OMIT_MSG) Verification/TestCode/Asm/MisalignedMemAccess
+test-RV32I-LandingPad:
+	$(RUN_TEST_OMIT_MSG) Verification/TestCode/Asm/LandingPad
 
 test-RV32M-IntMulZynq:
 	$(RUN_TEST_OMIT_MSG) Verification/TestCode/Asm/IntMulZynq
