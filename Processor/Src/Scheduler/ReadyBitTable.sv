@@ -20,23 +20,25 @@ import MicroOpTypes::*;
 module ReadyBitTable #(
     parameter SRC_OP_NUM = 2,
     parameter REG_NUM_BIT_WIDTH = 5,
-    parameter ENTRY_NUM = 32
+    parameter ENTRY_NUM = 32,
+    parameter WAKEUP_PORT_NUM = WAKEUP_WIDTH,
+    parameter DISPATCH_PORT_NUM = DISPATCH_WIDTH
 )(
     // input
     input   logic clk, rst, rstStart,
-    input   logic wakeup[ WAKEUP_WIDTH ],
-    input   logic wakeupDstValid [ WAKEUP_WIDTH ],
-    input   logic [REG_NUM_BIT_WIDTH-1:0] wakeupDstRegNum [ WAKEUP_WIDTH ],
-    input   logic dispatch[ DISPATCH_WIDTH ],
-    input   logic dispatchedDstValid [ DISPATCH_WIDTH ],
-    input   logic [REG_NUM_BIT_WIDTH-1:0] dispatchedDstRegNum [ DISPATCH_WIDTH ],
+    input   logic wakeup[ WAKEUP_PORT_NUM ],
+    input   logic wakeupDstValid [ WAKEUP_PORT_NUM ],
+    input   logic [REG_NUM_BIT_WIDTH-1:0] wakeupDstRegNum [ WAKEUP_PORT_NUM ],
+    input   logic dispatch[ DISPATCH_PORT_NUM ],
+    input   logic dispatchedDstValid [ DISPATCH_PORT_NUM ],
+    input   logic [REG_NUM_BIT_WIDTH-1:0] dispatchedDstRegNum [ DISPATCH_PORT_NUM ],
     input   logic dispatchedSrcValid [ DISPATCH_WIDTH ][ SRC_OP_NUM ],
     input   logic [REG_NUM_BIT_WIDTH-1:0] dispatchedSrcRegNum [ DISPATCH_WIDTH ][ SRC_OP_NUM ],
     // output
     output  logic dispatchedSrcReady[ DISPATCH_WIDTH ][ SRC_OP_NUM ]
 );
 
-    localparam READY_WRITE_NUM = WAKEUP_WIDTH + DISPATCH_WIDTH;
+    localparam READY_WRITE_NUM = WAKEUP_PORT_NUM + DISPATCH_PORT_NUM;
     localparam READY_READ_NUM = DISPATCH_WIDTH * SRC_OP_NUM;
 
     typedef logic [REG_NUM_BIT_WIDTH-1:0] RegNumPath;
@@ -66,7 +68,7 @@ module ReadyBitTable #(
 
     always_comb begin
 
-        for (int i = 0; i < WAKEUP_WIDTH; i++) begin
+        for (int i = 0; i < WAKEUP_PORT_NUM; i++) begin
             readyWA[i] = wakeupDstRegNum[i];
             readyWV[i] = TRUE;
             readyWE[i] = wakeup[i] && wakeupDstValid[i];
@@ -74,10 +76,10 @@ module ReadyBitTable #(
             //    ready[ wakeupDstRegNum[i] ] <= TRUE;
         end
 
-        for (int i = 0; i < DISPATCH_WIDTH; i++) begin
-            readyWA[i+WAKEUP_WIDTH] = dispatchedDstRegNum[i];
-            readyWV[i+WAKEUP_WIDTH] = FALSE;
-            readyWE[i+WAKEUP_WIDTH] = (dispatch[i] && dispatchedDstValid[i]);
+        for (int i = 0; i < DISPATCH_PORT_NUM; i++) begin
+            readyWA[i+WAKEUP_PORT_NUM] = dispatchedDstRegNum[i];
+            readyWV[i+WAKEUP_PORT_NUM] = FALSE;
+            readyWE[i+WAKEUP_PORT_NUM] = (dispatch[i] && dispatchedDstValid[i]);
             //if( dispatch[i] && dispatchedDstValid[i] ) begin
             //    ready[ dispatchedDstRegNum[i] ] <= FALSE;
         end
@@ -114,7 +116,7 @@ module ReadyBitTable #(
                     dispatchedSrcReady[i][j] = readyRV[i*SRC_OP_NUM + j];
 
                     // Bypass wakeup signals.
-                    for (int k = 0; k < WAKEUP_WIDTH; k++) begin
+                    for (int k = 0; k < WAKEUP_PORT_NUM; k++) begin
                         if (wakeup[k] &&
                             wakeupDstValid[k] &&
                             wakeupDstRegNum[k] == dispatchedSrcRegNum[i][j]

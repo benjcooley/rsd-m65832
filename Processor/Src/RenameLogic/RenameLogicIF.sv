@@ -31,6 +31,14 @@ interface RenameLogicIF( input logic clk, rst, rstStart );
     PRegNumPath phyDstReg [ RENAME_WIDTH ];
     PRegNumPath phyPrevDstReg [ RENAME_WIDTH ];  // For releasing a register.
 
+    // Flags rename (separate domain)
+    PFlagRegNumPath phySrcFlags [ RENAME_WIDTH ];
+    PFlagRegNumPath phyDstFlags [ RENAME_WIDTH ];
+    PFlagRegNumPath phyPrevDstFlags [ RENAME_WIDTH ];
+    logic writeFlags [ RENAME_WIDTH ];
+    logic readFlags [ RENAME_WIDTH ];
+    IssueQueueIndexPath srcIssueQueuePtrFlags [ RENAME_WIDTH ];
+
     // Read/Write control
     logic [ RENAME_WIDTH-1:0 ] updateRMT;
     logic readRegA [ RENAME_WIDTH ];
@@ -43,6 +51,8 @@ interface RenameLogicIF( input logic clk, rst, rstStart );
     // Release registers on retirement and recovery.
     logic releaseReg [ COMMIT_WIDTH ];
     PRegNumPath phyReleasedReg [ COMMIT_WIDTH ];
+    logic releaseFlagReg [ COMMIT_WIDTH ];
+    PFlagRegNumPath phyReleasedFlagReg [ COMMIT_WIDTH ];
 
     // There are enough resources to rename.
     logic allocatable;
@@ -90,8 +100,12 @@ interface RenameLogicIF( input logic clk, rst, rstStart );
         rstStart,
         updateRMT,
         writeReg,
+        writeFlags,
+        readFlags,
         releaseReg,
         phyReleasedReg,
+        releaseFlagReg,
+        phyReleasedFlagReg,
         retRMT_ReadReg_PhyRegNum,
         logDstReg,
         watWriteRegFromPipeReg,
@@ -99,6 +113,10 @@ interface RenameLogicIF( input logic clk, rst, rstStart );
     output
         allocatable,
         phyDstReg,
+        phySrcFlags,
+        phyDstFlags,
+        phyPrevDstFlags,
+        srcIssueQueuePtrFlags,
         retRMT_ReadReg_LogRegNum,
         rmtWriteReg,
         rmtWriteReg_PhyRegNum,
@@ -117,11 +135,15 @@ interface RenameLogicIF( input logic clk, rst, rstStart );
 `endif
         phyDstReg,
         phyPrevDstReg,
+        phySrcFlags,
+        phyDstFlags,
+        phyPrevDstFlags,
         srcIssueQueuePtrRegA,
         srcIssueQueuePtrRegB,
 `ifdef RSD_MARCH_FP_PIPE
         srcIssueQueuePtrRegC,
 `endif
+        srcIssueQueuePtrFlags,
         allocatable,
         prevDependIssueQueuePtr,
     output
@@ -138,6 +160,8 @@ interface RenameLogicIF( input logic clk, rst, rstStart );
         readRegC,
 `endif
         writeReg,
+        writeFlags,
+        readFlags,
         watWriteRegFromPipeReg,
         watWriteIssueQueuePtrFromPipeReg
     );
@@ -146,6 +170,8 @@ interface RenameLogicIF( input logic clk, rst, rstStart );
     input
         releaseReg,
         phyReleasedReg,
+        releaseFlagReg,
+        phyReleasedFlagReg,
         flushNum,
     output
         commit,
@@ -164,6 +190,8 @@ interface RenameLogicIF( input logic clk, rst, rstStart );
     output
         releaseReg,
         phyReleasedReg,
+        releaseFlagReg,
+        phyReleasedFlagReg,
         flushNum
     );
 

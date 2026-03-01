@@ -75,17 +75,26 @@ module RenameLogicCommitter(
         logic releaseReg;
         PRegNumPath phyReleasedReg;
     } ReleasedRegister;
+    typedef struct packed
+    {
+        logic releaseReg;
+        PFlagRegNumPath phyReleasedReg;
+    } ReleasedFlagRegister;
     ReleasedRegister regReleasedReg[COMMIT_WIDTH];
     ReleasedRegister nextReleasedReg[COMMIT_WIDTH];
+    ReleasedFlagRegister flagReleasedReg[COMMIT_WIDTH];
+    ReleasedFlagRegister nextFlagReleasedReg[COMMIT_WIDTH];
 
     always_ff@(posedge port.clk) begin
         if (port.rst) begin
             for (int i = 0; i < COMMIT_WIDTH; i++) begin
                 regReleasedReg[i] <= '0;
+                flagReleasedReg[i] <= '0;
             end
         end
         else begin
             regReleasedReg <= nextReleasedReg;
+            flagReleasedReg <= nextFlagReleasedReg;
         end
     end
 
@@ -93,6 +102,8 @@ module RenameLogicCommitter(
         for (int i = 0; i < COMMIT_WIDTH; i++) begin
             port.releaseReg[i] = regReleasedReg[i].releaseReg;
             port.phyReleasedReg[i] = regReleasedReg[i].phyReleasedReg;
+            port.releaseFlagReg[i] = flagReleasedReg[i].releaseReg;
+            port.phyReleasedFlagReg[i] = flagReleasedReg[i].phyReleasedReg;
         end
     end
 
@@ -129,15 +140,18 @@ module RenameLogicCommitter(
                     // A head op can commit.
                     // Release registers to the free lists.
                     nextReleasedReg[i].releaseReg = alReadData[i].writeReg;
+                    nextFlagReleasedReg[i].releaseReg = alReadData[i].writeFlags;
                 end
                 else begin
                     // A head op cannot commit.
                     // The active list and the free lists are not updated.
                     nextReleasedReg[i].releaseReg = FALSE;
+                    nextFlagReleasedReg[i].releaseReg = FALSE;
                 end
 
                 // Released registers are set from the head entry of the active list.
                 nextReleasedReg[i].phyReleasedReg = alReadData[i].phyPrevDstRegNum;
+                nextFlagReleasedReg[i].phyReleasedReg = alReadData[i].phyPrevFlagsDstRegNum;
             end
 
             recovery.inRecoveryAL = FALSE;
@@ -149,6 +163,8 @@ module RenameLogicCommitter(
             for ( int i = 0; i < COMMIT_WIDTH; i++ ) begin
                 nextReleasedReg[i].releaseReg = FALSE;
                 nextReleasedReg[i].phyReleasedReg = 0;
+                nextFlagReleasedReg[i].releaseReg = FALSE;
+                nextFlagReleasedReg[i].phyReleasedReg = 0;
             end
             recovery.inRecoveryAL = TRUE;
             flushNum = '0;
@@ -169,15 +185,18 @@ module RenameLogicCommitter(
                         // A head op can commit.
                         // Release registers to the free lists.
                         nextReleasedReg[i].releaseReg = alReadData[i].writeReg;
+                        nextFlagReleasedReg[i].releaseReg = alReadData[i].writeFlags;
                     end
                     else begin
                         // A head op cannot commit.
                         // The active list and the free lists are not updated.
                         nextReleasedReg[i].releaseReg = FALSE;
+                        nextFlagReleasedReg[i].releaseReg = FALSE;
                     end
 
                     // Released registers are set from the head entry of the active list.
                     nextReleasedReg[i].phyReleasedReg = alReadData[i].phyDstRegNum;
+                    nextFlagReleasedReg[i].phyReleasedReg = alReadData[i].phyFlagsDstRegNum;
                 end
 
                 recovery.inRecoveryAL = TRUE;
@@ -195,15 +214,18 @@ module RenameLogicCommitter(
                         // A head op can commit.
                         // Release registers to the free lists.
                         nextReleasedReg[i].releaseReg = alReadData[i].writeReg;
+                        nextFlagReleasedReg[i].releaseReg = alReadData[i].writeFlags;
                     end
                     else begin
                         // A head op cannot commit.
                         // The active list and the free lists are not updated.
                         nextReleasedReg[i].releaseReg = FALSE;
+                        nextFlagReleasedReg[i].releaseReg = FALSE;
                     end
 
                     // Released registers are set from the tail entry of the active list.
                     nextReleasedReg[i].phyReleasedReg = alReadData[i].phyDstRegNum;
+                    nextFlagReleasedReg[i].phyReleasedReg = alReadData[i].phyFlagsDstRegNum;
                 end
 
                 recovery.inRecoveryAL = TRUE;

@@ -20,6 +20,7 @@ module DestinationRAM (WakeupSelectIF.DestinationRAM port);
     typedef struct packed // Entry
     {
         SchedulerRegTag  regTag;
+        SchedulerRegTag  regTag2;
     } Entry;
 
     logic write[DISPATCH_WIDTH];
@@ -57,10 +58,12 @@ module DestinationRAM (WakeupSelectIF.DestinationRAM port);
             write[i] = port.write[i];
             writePtr[i] = port.writePtr[i];
             writeData[i].regTag = port.writeDstTag[i].regTag;
+            writeData[i].regTag2 = port.writeDstTag[i].regTag2;
         end
 
         for (int i = 0; i < WAKEUP_WIDTH; i++) begin
             port.wakeupDstTag[i].regTag = readData[i].regTag;
+            port.wakeupDstTag[i].regTag2 = readData[i].regTag2;
         end
 
         for (int i = 0; i < INT_ISSUE_WIDTH; i++) begin

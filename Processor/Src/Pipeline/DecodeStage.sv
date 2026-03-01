@@ -104,7 +104,7 @@ module DecodeStage(
     
     // Micro-op decoder
     OpInfo [ALL_DECODED_MICRO_OP_WIDTH-1:0] microOps;  // Decoded micro ops
-    InsnInfo [DECODE_WIDTH-1:0] insnInfo;   // Whether a decoded instruction is branch or not.
+    InsnInfo insnInfo[DECODE_WIDTH];
     
     always_comb begin
         for (int i = 0; i < DECODE_WIDTH; i++) begin
@@ -128,10 +128,10 @@ module DecodeStage(
     logic complete;
     
     // Early branch misprediction detection.
-    RISCV_ISF_Common [DECODE_WIDTH-1:0] isfIn;
+    InsnPath isfIn[DECODE_WIDTH];
     logic stallBranchResolver;
     logic insnValidIn[DECODE_WIDTH];
-    BranchPred [DECODE_WIDTH-1:0] brPredIn;
+    BranchPred brPredIn[DECODE_WIDTH];
     PC_Path pcIn[DECODE_WIDTH];
 
     logic insnValidOut[DECODE_WIDTH];

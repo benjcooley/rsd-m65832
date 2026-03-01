@@ -30,7 +30,7 @@ int GetCommittedRegisterValue(
     auto* helper = top->VerilatorHelper;
     static const int LSCALAR_NUM = helper->LSCALAR_NUM;
 
-    typeof (core->retirementRMT->regRMT->debugValue) phyRegNum;
+    decltype(core->retirementRMT->regRMT->debugValue) phyRegNum;
 
     // Copy RMT to local variable.
     for (int i = 0; i < LREG_NUM; i++) {
@@ -304,7 +304,7 @@ int main(int argc, char** argv) {
                 // Check end of simulation.
                 if (ENABLE_PC_GOAL) {
                     lastCommittedPC = top->ledOut;
-                    if (lastCommittedPC == static_cast<typeof(top->ledOut)>(PC_GOAL)) {
+                    if (lastCommittedPC == static_cast<LED_Path>(PC_GOAL & 0xFFFF)) {
                         // lastCommittedPC は 16bit 分しか外に出てきていないので，下位で判定しておく
                         printf("PC reached PC_GOAL: %08x\n", PC_GOAL);
                         break;

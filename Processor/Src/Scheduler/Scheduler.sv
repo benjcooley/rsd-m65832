@@ -18,6 +18,17 @@ module Scheduler(
     FPDivSqrtUnitIF.Scheduler fpDivSqrtUnit,
     DebugIF.Scheduler debug
 );
+    function automatic PRegNumPath ToPseudoFlagRegNum(input PFlagRegNumPath flagNum);
+        PRegNumPath ret;
+        // Reuse the scheduler's reg-tag fabric by mapping flags into a disjoint
+        // pseudo register namespace (FP-tag space).
+        ret = '0;
+`ifdef RSD_MARCH_FP_PIPE
+        ret.isFP = TRUE;
+`endif
+        ret.regNum[$bits(PFlagRegNumPath)-1:0] = flagNum;
+        return ret;
+    endfunction
 
     // A flag that indicates a not-issued state.
     // This flag contains the validness of each entry.
@@ -248,9 +259,28 @@ module Scheduler(
             wakeupSelect.writeSrcTag[i].regTag[2].num = port.writeSchedulerData[i].opSrc.phySrcRegNumC;
 `endif
 
-            // wakeupSelect.writeSrcTag
-            wakeupSelect.writeDstTag[i].regTag.valid = port.writeSchedulerData[i].opDst.writeReg;
-            wakeupSelect.writeDstTag[i].regTag.num = port.writeSchedulerData[i].opDst.phyDstRegNum;
+            // Destination tags (support dual-write ops: GPR + flags).
+            wakeupSelect.writeDstTag[i].regTag.valid =
+                port.writeSchedulerData[i].opDst.writeReg;
+            wakeupSelect.writeDstTag[i].regTag.num =
+                port.writeSchedulerData[i].opDst.phyDstRegNum;
+            wakeupSelect.writeDstTag[i].regTag2.valid = FALSE;
+            wakeupSelect.writeDstTag[i].regTag2.num = '0;
+
+            if (port.writeSchedulerData[i].opDst.writeFlags) begin
+                if (port.writeSchedulerData[i].opDst.writeReg) begin
+                    // Secondary destination carries flags for dual-write instructions.
+                    wakeupSelect.writeDstTag[i].regTag2.valid = TRUE;
+                    wakeupSelect.writeDstTag[i].regTag2.num =
+                        ToPseudoFlagRegNum(port.writeSchedulerData[i].opDst.phyFlagsDstRegNum);
+                end
+                else begin
+                    // Flag-only write uses the primary destination slot.
+                    wakeupSelect.writeDstTag[i].regTag.valid = TRUE;
+                    wakeupSelect.writeDstTag[i].regTag.num =
+                        ToPseudoFlagRegNum(port.writeSchedulerData[i].opDst.phyFlagsDstRegNum);
+                end
+            end
 
             // Source pointers to a matrix.
             wakeupSelect.writeSrcTag[i].regPtr[0].valid = port.writeSchedulerData[i].srcRegValidA;
@@ -263,6 +293,25 @@ module Scheduler(
             wakeupSelect.writeSrcTag[i].regPtr[1].ptr = port.writeSchedulerData[i].srcPtrRegB;
 `ifdef RSD_MARCH_FP_PIPE
             wakeupSelect.writeSrcTag[i].regPtr[2].ptr = port.writeSchedulerData[i].srcPtrRegC;
+`endif
+
+            // Route flags dependencies through the 3rd source slot.
+`ifdef RSD_MARCH_FP_PIPE
+            if (port.writeSchedulerData[i].srcFlagsValid) begin
+                wakeupSelect.writeSrcTag[i].regTag[2].valid = TRUE;
+                wakeupSelect.writeSrcTag[i].regTag[2].num =
+                    ToPseudoFlagRegNum(port.writeSchedulerData[i].opSrc.phySrcFlagsRegNum);
+                wakeupSelect.writeSrcTag[i].regPtr[2].valid = TRUE;
+                wakeupSelect.writeSrcTag[i].regPtr[2].ptr = port.writeSchedulerData[i].srcPtrFlags;
+            end
+`else
+            if (port.writeSchedulerData[i].srcFlagsValid) begin
+                wakeupSelect.writeSrcTag[i].regTag[1].valid = TRUE;
+                wakeupSelect.writeSrcTag[i].regTag[1].num =
+                    ToPseudoFlagRegNum(port.writeSchedulerData[i].opSrc.phySrcFlagsRegNum);
+                wakeupSelect.writeSrcTag[i].regPtr[1].valid = TRUE;
+                wakeupSelect.writeSrcTag[i].regPtr[1].ptr = port.writeSchedulerData[i].srcPtrFlags;
+            end
 `endif
 
         end

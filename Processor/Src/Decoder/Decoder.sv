@@ -1,1940 +1,701 @@
 // Copyright 2019- RSD contributors.
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
-
-
 //
-// Micro op decoder
+// M65832 fixed32 instruction decoder.
+// Decodes a 32-bit instruction word into OpInfo + InsnInfo.
+// One instruction -> one micro-op (no cracking).
 //
-
 
 import BasicTypes::*;
-import MicroOpTypes::*;
 import OpFormatTypes::*;
+import MicroOpTypes::*;
 
-
-function automatic void EmitInvalidOp(
-    output OpInfo op
-);
-    op = '0;
-    op.valid = FALSE;
-endfunction
-
-
-//
-// Modify micro op information.
-//
-
-function automatic OpInfo ModifyMicroOp(
-    input OpInfo src,
-    input MicroOpIndex mid,
-    input logic split,
-    input logic last
-);
-    OpInfo op;
-    op = src;
-    op.mid = mid;
-    op.split = split;
-    op.last = last;
-    return op;
-endfunction
-
-
-//
-//  RISCV Instruction Decoder
-//
-
-
-//
-// --- 即値整数演算, シフト含む
-//
-function automatic void RISCV_EmitOpImm(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf,
-    input LScalarRegNumPath srcRegNumA,
-    input LScalarRegNumPath srcRegNumB,
-    input LScalarRegNumPath dstRegNum,
-    input logic unsupported
-);
-    RISCV_ISF_I isfI;
-    RISCV_ISF_R isfR;
-    OpFunct3 opFunct3;
-    ShiftFunct7 shiftFunct7;
-    RISCV_IntOperandImmShift intOperandImmShift;
-    logic isShift;
-
-    IntALU_Code aluCode;
-
-    isfI = isf;
-    isfR = isf;
-    opFunct3 = OpFunct3'(isfR.funct3);
-    shiftFunct7 = ShiftFunct7'(isfR.funct7);
-    isShift = ( ( opFunct3 == OP_FUNCT3_SLL ) || ( opFunct3 == OP_FUNCT3_SRL_SRA ) );
-
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.operand.intOp.dstRegNum.isFP  = FALSE;
-    opInfo.operand.intOp.srcRegNumA.isFP = FALSE;
-    opInfo.operand.intOp.srcRegNumB.isFP = FALSE;
-`endif
-    opInfo.operand.intOp.dstRegNum.regNum  = dstRegNum;
-    opInfo.operand.intOp.srcRegNumA.regNum = srcRegNumA;
-    opInfo.operand.intOp.srcRegNumB.regNum = srcRegNumB;
-
-    // 即値
-    opInfo.operand.intOp.shiftType = SOT_IMM_SHIFT ;
-
-    intOperandImmShift.shift        =  isShift ? isfR.rs2 : '0;
-    intOperandImmShift.shiftType    =  ( opFunct3 == OP_FUNCT3_SLL ) ? ST_LSL :
-                                    ( ( opFunct3 == OP_FUNCT3_SRL_SRA ) && ( shiftFunct7 == SHIFT_FUNCT7_SRL ) ) ? ST_LSR :
-                                    ( ( opFunct3 == OP_FUNCT3_SRL_SRA ) && ( shiftFunct7 == SHIFT_FUNCT7_SRA ) ) ? ST_ASR :
-                                    ST_ROR;
-    intOperandImmShift.isRegShift   = FALSE;
-    intOperandImmShift.imm          = isShift ? ShamtExtention( isfR ) : I_TypeImmExtention( isfI );
-    intOperandImmShift.immType      = RISCV_IMM_I;
-
-    opInfo.operand.intOp.shiftIn   = intOperandImmShift;
-
-
-    // ALU
-    RISCV_DecodeOpImmFunct3( aluCode, opFunct3 );
-    opInfo.operand.intOp.aluCode = aluCode;
-
-    // レジスタ書き込みを行うかどうか
-    // ゼロレジスタへの書き込みは書き込みフラグをFALSEとする
-    opInfo.writeReg  = ( dstRegNum != ZERO_REGISTER ) ? TRUE : FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_REG;
-    opInfo.opTypeB = OOT_IMM;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_INT;
-    opInfo.mopSubType.intType = isShift ? INT_MOP_TYPE_SHIFT : INT_MOP_TYPE_ALU;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // 未定義命令
-    opInfo.unsupported = unsupported;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-
-    // Control
-    opInfo.valid = TRUE;    // Valid outputs
-endfunction
-
-function automatic void RISCV_DecodeOpImm(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
+module Decoder(
+    input InsnPath insn,
     output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo intOp;
-    OpInfo shiftOp;
-    OpInfo rijOp;
-    OpInfo selectOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitOpImm(
-        .opInfo( intOp ),
-        .isf( isf ),
-        .srcRegNumA( isf.rs1 ),
-        .srcRegNumB( 0 ),
-        .dstRegNum( isf.rd ),
-        .unsupported( FALSE )
-    );
-
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(intOp, mid, FALSE, TRUE);
-    mid += 1;
-
-    insnInfo.writePC = FALSE;
-    insnInfo.isCall = FALSE;
-    insnInfo.isReturn = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = FALSE;
-
-endfunction
-
-
-//
-// --- レジスタ整数演算, シフト含む
-//
-function automatic void RISCV_EmitOp(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf,
-    input LScalarRegNumPath srcRegNumA,
-    input LScalarRegNumPath srcRegNumB,
-    input LScalarRegNumPath dstRegNum,
-    input logic unsupported
-);
-    RISCV_ISF_R isfR;
-    OpFunct3 opFunct3;
-    OpFunct7 opFunct7;
-    ShiftFunct7 shiftFunct7;
-    RISCV_IntOperandImmShift intOperandImmShift;
-    logic isShift;
-
-    IntALU_Code aluCode;
-
-    isfR = isf;
-    opFunct3 = OpFunct3'(isfR.funct3);
-    opFunct7 = OpFunct7'(isfR.funct7);
-    shiftFunct7 = ShiftFunct7'(isfR.funct7);
-    isShift = ( ( opFunct3 == OP_FUNCT3_SLL ) || ( opFunct3 == OP_FUNCT3_SRL_SRA ) );
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.operand.intOp.dstRegNum.isFP  = FALSE;
-    opInfo.operand.intOp.srcRegNumA.isFP = FALSE;
-    opInfo.operand.intOp.srcRegNumB.isFP = FALSE;
-`endif
-    opInfo.operand.intOp.dstRegNum.regNum  = dstRegNum;
-    opInfo.operand.intOp.srcRegNumA.regNum = srcRegNumA;
-    opInfo.operand.intOp.srcRegNumB.regNum = srcRegNumB;
-
-    // 即値
-    opInfo.operand.intOp.shiftType = SOT_REG_SHIFT ;
-
-    intOperandImmShift.shift        =  isShift ? isfR.rs2 : '0;
-    intOperandImmShift.shiftType    =  ( opFunct3 == OP_FUNCT3_SLL ) ? ST_LSL :
-                                    ( ( opFunct3 == OP_FUNCT3_SRL_SRA ) && ( shiftFunct7 == SHIFT_FUNCT7_SRL ) ) ? ST_LSR :
-                                    ( ( opFunct3 == OP_FUNCT3_SRL_SRA ) && ( shiftFunct7 == SHIFT_FUNCT7_SRA ) ) ? ST_ASR :
-                                    ST_ROR;
-    intOperandImmShift.isRegShift   = TRUE;
-    intOperandImmShift.imm          = '0;
-    intOperandImmShift.immType      = RISCV_IMM_R;
-
-    opInfo.operand.intOp.shiftIn   = intOperandImmShift;
-
-
-    // ALU
-    //RISCV_DecodeOpFunct3( isfR.funct3, isfR.funct7, opInfo.operand.intOp.aluCode);
-    RISCV_DecodeOpFunct3( aluCode, opFunct3, opFunct7 );
-    opInfo.operand.intOp.aluCode = aluCode;
-
-    // レジスタ書き込みを行うかどうか
-    // ゼロレジスタへの書き込みは書き込みフラグをFALSEとする
-    opInfo.writeReg  = ( dstRegNum != ZERO_REGISTER ) ? TRUE : FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_REG;
-    opInfo.opTypeB = OOT_REG;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_INT;
-    opInfo.mopSubType.intType = isShift ? INT_MOP_TYPE_SHIFT : INT_MOP_TYPE_ALU;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // 未定義命令
-    opInfo.unsupported = unsupported;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-
-    // Control
-    opInfo.valid = TRUE;    // Valid outputs
-endfunction
-
-function automatic void RISCV_DecodeOp(
     output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo intOp;
-    OpInfo shiftOp;
-    OpInfo rijOp;
-    OpInfo selectOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitOp(
-        .opInfo( intOp ),
-        .isf( isf ),
-        .srcRegNumA( isf.rs1 ),
-        .srcRegNumB( isf.rs2 ),
-        .dstRegNum( isf.rd ),
-        .unsupported( FALSE )
-    );
-
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(intOp, mid, FALSE, TRUE);
-    mid += 1;
-
-    insnInfo.writePC = FALSE;
-    insnInfo.isCall = FALSE;
-    insnInfo.isReturn = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = FALSE;
-
-endfunction
-
-
-//
-// --- RISCV LUI, AUIPC
-//
-function automatic void RISCV_EmitUTypeInst(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf,
-    input LScalarRegNumPath srcRegNumA,
-    input LScalarRegNumPath srcRegNumB,
-    input LScalarRegNumPath dstRegNum,
-    input logic unsupported
-);
-    RISCV_ISF_U isfU;
-    RISCV_IntOperandImmShift intOperandImmShift;
-
-    isfU = isf;
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.operand.intOp.dstRegNum.isFP  = FALSE;
-    opInfo.operand.intOp.srcRegNumA.isFP = FALSE;
-    opInfo.operand.intOp.srcRegNumB.isFP = FALSE;
-`endif
-    opInfo.operand.intOp.dstRegNum.regNum  = dstRegNum;
-    opInfo.operand.intOp.srcRegNumA.regNum = srcRegNumA;
-    opInfo.operand.intOp.srcRegNumB.regNum = srcRegNumB;
-
-    // 即値
-    opInfo.operand.intOp.shiftType = SOT_REG_SHIFT ;
-
-    intOperandImmShift.shift        = '0;
-    intOperandImmShift.shiftType    = ST_ROR;
-    intOperandImmShift.isRegShift   = TRUE;
-    intOperandImmShift.imm          = isfU.imm;
-    intOperandImmShift.immType      = RISCV_IMM_U;
-
-    opInfo.operand.intOp.shiftIn   = intOperandImmShift;
-
-
-    // ALU
-    opInfo.operand.intOp.aluCode = AC_ADD;
-
-    // レジスタ書き込みを行うかどうか
-    // ゼロレジスタへの書き込みは書き込みフラグをFALSEとする
-    opInfo.writeReg  = ( dstRegNum != ZERO_REGISTER ) ? TRUE : FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = isf.opCode == RISCV_AUIPC ? OOT_PC : OOT_REG;
-    opInfo.opTypeB = OOT_IMM;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_INT;
-    opInfo.mopSubType.intType = INT_MOP_TYPE_ALU;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // 未定義命令
-    opInfo.unsupported = unsupported;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-
-    // Control
-    opInfo.valid = TRUE;    // Valid outputs
-endfunction
-
-function automatic void RISCV_DecodeUTypeInst(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo intOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitUTypeInst(
-        .opInfo( intOp ),
-        .isf( isf ),
-        .srcRegNumA( 0 ),
-        .srcRegNumB( 0 ),
-        .dstRegNum( isf.rd ),
-        .unsupported( FALSE )
-    );
-
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(intOp, mid, FALSE, TRUE);
-    mid += 1;
-
-    insnInfo.writePC = FALSE;
-    insnInfo.isCall = FALSE;
-    insnInfo.isReturn = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = FALSE;
-
-endfunction
-
-
-//
-// --- RISCV JAL
-//
-function automatic void RISCV_EmitJAL(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf
-);
-    RISCV_ISF_U isfU;
-    isfU = isf;
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.operand.brOp.dstRegNum.isFP  = FALSE;
-    opInfo.operand.brOp.srcRegNumA.isFP = FALSE;
-    opInfo.operand.brOp.srcRegNumB.isFP = FALSE;
-`endif
-    opInfo.operand.brOp.dstRegNum.regNum  = isfU.rd;
-    opInfo.operand.brOp.srcRegNumA.regNum = '0;
-    opInfo.operand.brOp.srcRegNumB.regNum = '0;
-
-    // レジスタ書き込みを行うかどうか
-    // 比較系の命令はレジスタに書き込みを行わない
-    // ゼロレジスタへの書き込みは書き込みフラグをFALSEとする
-    opInfo.writeReg  = ( isfU.rd != ZERO_REGISTER ) ? TRUE : FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_PC;
-    opInfo.opTypeB = OOT_IMM;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_INT;
-    opInfo.mopSubType.intType = INT_MOP_TYPE_BR;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // 分岐ターゲット
-    opInfo.operand.brOp.brDisp = GetJAL_Target( isf );
-    opInfo.operand.brOp.padding = 0;
-
-    // 未定義命令
-    opInfo.unsupported = FALSE;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-
-    // Control
-    opInfo.valid = TRUE;    // Valid outputs
-endfunction
-
-function automatic void RISCV_DecodeJAL(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo brOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitJAL(
-        .opInfo( brOp ),
-        .isf( isf )
-    );
-
-    // Initizalize
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(brOp, mid, FALSE, TRUE);
-
-    insnInfo.writePC = TRUE;
-    insnInfo.isCall = ( brOp.writeReg && ( brOp.operand.brOp.dstRegNum.regNum == LINK_REGISTER ) ) ? TRUE : FALSE;
-    insnInfo.isReturn = FALSE;
-    insnInfo.isRelBranch = TRUE;
-    insnInfo.isSerialized = FALSE;
-
-endfunction
-
-
-//
-// --- RISCV Decode JALR
-//
-function automatic void RISCV_EmitJALR(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf
-);
-
-    RISCV_ISF_I isfI;
-    isfI = isf;
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.operand.brOp.dstRegNum.isFP  = FALSE;
-    opInfo.operand.brOp.srcRegNumA.isFP = FALSE;
-    opInfo.operand.brOp.srcRegNumB.isFP = FALSE;
-`endif
-    opInfo.operand.brOp.dstRegNum.regNum  = isfI.rd;
-    opInfo.operand.brOp.srcRegNumA.regNum = isfI.rs1;
-    opInfo.operand.brOp.srcRegNumB.regNum = 0;
-
-    // レジスタ書き込みを行うかどうか
-    // 比較系の命令はレジスタに書き込みを行わない
-    // ゼロレジスタへの書き込みは書き込みフラグをFALSEとする
-    opInfo.writeReg  = ( isfI.rd != ZERO_REGISTER ) ? TRUE : FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_REG;
-    opInfo.opTypeB = OOT_IMM;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_INT;
-    opInfo.mopSubType.intType = INT_MOP_TYPE_RIJ;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // 分岐ターゲット
-    opInfo.operand.brOp.brDisp = GetJALR_Target( isfI );
-    opInfo.operand.brOp.padding = '0;
-
-    // 未定義命令
-    opInfo.unsupported = FALSE;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-
-    // Control
-    opInfo.valid = TRUE;    // Valid outputs
-endfunction
-
-function automatic void RISCV_DecodeJALR(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo brOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitJALR(
-        .opInfo( brOp ),
-        .isf( isf )
-    );
-
-    // Initizalize
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(brOp, mid, FALSE, TRUE);
-
-    insnInfo.writePC = TRUE;
-    insnInfo.isCall = ( brOp.writeReg && ( brOp.operand.brOp.dstRegNum.regNum == LINK_REGISTER ) ) ? TRUE : FALSE;
-    insnInfo.isReturn = ( ( brOp.operand.brOp.srcRegNumA.regNum == LINK_REGISTER )
-                        && ( brOp.operand.brOp.dstRegNum.regNum == ZERO_REGISTER ) ) ? TRUE : FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = FALSE;
-
-endfunction
-
-
-//
-// --- RISCV BRANCH
-//
-function automatic void RISCV_EmitBranch(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf
-);
-    RISCV_ISF_R isfR;
-    BrFunct3 brFunct3;
-    CondCode condCode;
-
-    isfR = isf;
-    brFunct3 = BrFunct3'(isfR.funct3);
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.operand.brOp.dstRegNum.isFP  = FALSE;
-    opInfo.operand.brOp.srcRegNumA.isFP = FALSE;
-    opInfo.operand.brOp.srcRegNumB.isFP = FALSE;
-`endif
-    opInfo.operand.brOp.dstRegNum.regNum  = 0;
-    opInfo.operand.brOp.srcRegNumA.regNum = isfR.rs1;
-    opInfo.operand.brOp.srcRegNumB.regNum = isfR.rs2;
-
-    // レジスタ書き込みを行うかどうか
-    // 比較系の命令はレジスタに書き込みを行わない
-    // ゼロレジスタへの書き込みは書き込みフラグをFALSEとする
-    opInfo.writeReg  = FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_REG;
-    opInfo.opTypeB = OOT_REG;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_INT;
-    opInfo.mopSubType.intType = INT_MOP_TYPE_BR;
-
-    // 条件コード
-    //RISCV_DecodeBrFunct3(isfR.funct3, opInfo.cond);
-    RISCV_DecodeBrFunct3( condCode, brFunct3 );
-    opInfo.cond = condCode;
-
-    // 分岐ターゲット
-    opInfo.operand.brOp.brDisp = GetBranchDisplacement( isfR );
-    opInfo.operand.brOp.padding = '0;
-
-    // 未定義命令
-    opInfo.unsupported = FALSE;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-
-    // Control
-    opInfo.valid = TRUE;    // Valid outputs
-endfunction
-
-function automatic void RISCV_DecodeBranch(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo brOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitBranch(
-        .opInfo( brOp ),
-        .isf( isf )
-    );
-
-    // Initizalize
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(brOp, mid, FALSE, TRUE);
-
-    insnInfo.writePC    = TRUE;
-    insnInfo.isCall     = FALSE;
-    insnInfo.isReturn   = FALSE;
-    insnInfo.isRelBranch = TRUE;
-    insnInfo.isSerialized = FALSE;
-
-endfunction
-
-//
-// --- EISCV MEMORY OP
-//
-function automatic void RISCV_EmitMemOp(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf
-);
-    RISCV_ISF_S isfS;
-    RISCV_ISF_I isfI;
-    MemFunct3 memFunct3;
-    logic isLoad;
-
-    MemAccessMode memAccessMode;
-
-    isfS = isf;
-    isfI = isf;
-    memFunct3 = MemFunct3'(isfS.funct3);
-    isLoad = ( isfI.opCode == RISCV_LD );
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.operand.memOp.dstRegNum.isFP  = FALSE;
-    opInfo.operand.memOp.srcRegNumA.isFP = FALSE;
-    opInfo.operand.memOp.srcRegNumB.isFP = FALSE;
-`endif
-    opInfo.operand.memOp.dstRegNum.regNum  = isLoad ? isfI.rd : '0;
-    opInfo.operand.memOp.srcRegNumA.regNum = isfI.rs1;
-    opInfo.operand.memOp.srcRegNumB.regNum = isLoad ? '0 : isfS.rs2;
-    opInfo.operand.memOp.csrCtrl = '0; // unused
-    opInfo.operand.memOp.padding = '0;
-
-    // レジスタ書き込みを行うかどうか
-    // ゼロレジスタへの書き込みは書き込みフラグをFALSEとする
-    opInfo.writeReg  = ( isfI.rd != ZERO_REGISTER ) & isLoad;
-
-    // 論理レジスタを読むかどうか
-    // ストア時はBを読む
-    opInfo.opTypeA = OOT_REG;
-    opInfo.opTypeB = isLoad ? OOT_IMM : OOT_REG;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_MEM;
-    opInfo.mopSubType.memType = isLoad ? MEM_MOP_TYPE_LOAD : MEM_MOP_TYPE_STORE;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // アドレッシング
-    opInfo.operand.memOp.addrIn    = isLoad ? isfI.imm : {isfS.imm2, isfS.imm1};
-    opInfo.operand.memOp.isAddAddr = TRUE;
-    opInfo.operand.memOp.isRegAddr = TRUE;
-    RISCV_DecodeMemAccessMode( memAccessMode, memFunct3 );
-    opInfo.operand.memOp.memAccessMode = memAccessMode;
-
-    opInfo.valid = TRUE;
-
-    opInfo.unsupported = FALSE;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-endfunction
-
-function automatic void RISCV_DecodeMemOp(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo memOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitMemOp(
-        .opInfo( memOp ),
-        .isf( isf )
-    );
-
-    // Initizalize
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(memOp, mid, FALSE, TRUE);
-
-    insnInfo.writePC    = FALSE;
-    insnInfo.isCall     = FALSE;
-    insnInfo.isReturn   = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = FALSE;
-
-endfunction
-
-
-//
-// --- Complex Op (RISC-VではRV32M)
-//
-function automatic void RISCV_EmitComplexOp(
-    output OpInfo  opInfo, 
-    input RISCV_ISF_Common isf,
-    input LScalarRegNumPath srcRegNumA,
-    input LScalarRegNumPath srcRegNumB,
-    input LScalarRegNumPath dstRegNum,
-    input logic unsupported
-);
-    RISCV_ISF_R isfR;
-    OpFunct3 opFunct3;
-    OpFunct7 opFunct7;
-    RV32MFunct3 rv32mFunct3;
-    RV32MFunct7 rv32mFunct7;
-    logic isMul;
-
-    IntMUL_Code mulCode;
-    IntDIV_Code divCode;
-
-    isfR = isf;
-    opFunct3 = OpFunct3'(isfR.funct3);
-    opFunct7 = OpFunct7'(isfR.funct7);
-    rv32mFunct3 = RV32MFunct3'(isfR.funct3);
-    rv32mFunct7 = RV32MFunct7'(isfR.funct7);
-    isMul = ( rv32mFunct3 < RV32M_FUNCT3_DIV );
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.operand.complexOp.dstRegNum.isFP  = FALSE;
-    opInfo.operand.complexOp.srcRegNumA.isFP = FALSE;
-    opInfo.operand.complexOp.srcRegNumB.isFP = FALSE;
-`endif
-    opInfo.operand.complexOp.dstRegNum.regNum  = dstRegNum;
-    opInfo.operand.complexOp.srcRegNumA.regNum = srcRegNumA;
-    opInfo.operand.complexOp.srcRegNumB.regNum = srcRegNumB;
-    
-    // 乗算の有効な結果の位置
-    opInfo.operand.complexOp.mulGetUpper = ( rv32mFunct3 > RV32M_FUNCT3_MUL) ;
-
-    // ALU
-    RISCV_DecodeComplexOpFunct3( mulCode, divCode, rv32mFunct3 );
-    opInfo.operand.complexOp.mulCode = mulCode;
-    opInfo.operand.complexOp.divCode = divCode;
-    opInfo.operand.complexOp.padding = '0;
-    opInfo.operand.complexOp.riscv_padding = '0;
-
-    // レジスタ書き込みを行うかどうか
-    // ゼロレジスタへの書き込みは書き込みフラグをFALSEとする   
-    opInfo.writeReg  = ( dstRegNum != ZERO_REGISTER ) ? TRUE : FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_REG;
-    opInfo.opTypeB = OOT_REG;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-`ifdef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
-    // Mem pipe で処理
-    opInfo.mopType = MOP_TYPE_MEM;
-    opInfo.mopSubType.memType = isMul ? MEM_MOP_TYPE_MUL : MEM_MOP_TYPE_DIV;
-`else
-    // 剰余は除算と演算器を共有するためCOMPLEX_MOP_TYPE_DIVとする
-    opInfo.mopType = MOP_TYPE_COMPLEX;
-    opInfo.mopSubType.complexType = isMul ? COMPLEX_MOP_TYPE_MUL : COMPLEX_MOP_TYPE_DIV;
-`endif
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // 未定義命令
-    opInfo.unsupported = unsupported;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-
-    // Control
-    opInfo.valid = TRUE;    // Valid outputs
-endfunction
-
-function automatic void RISCV_DecodeComplexOp( 
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo complexOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitComplexOp(
-        .opInfo( complexOp ),
-        .isf( isf ),
-        .srcRegNumA( isf.rs1 ),
-        .srcRegNumB( isf.rs2 ),
-        .dstRegNum( isf.rd ),
-        .unsupported( FALSE )
-    );
-
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(complexOp, mid, FALSE, TRUE);
-    mid += 1;
-
-    insnInfo.writePC = FALSE;
-    insnInfo.isCall = FALSE;
-    insnInfo.isReturn = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = FALSE;
-
-endfunction
-
-//
-// --- Misc-Mem
-//
-function automatic void RISCV_EmitMiscMemOp(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf
-);
-    RISCV_ISF_MISC_MEM isfMiscMem;
-    MiscMemFunct3 opFunct3;
-    MiscMemMicroOpOperand miscMemOp;
-
-    isfMiscMem = isf;
-    opFunct3 = MiscMemFunct3'(isfMiscMem.funct3);
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    miscMemOp.dstRegNum.isFP  = FALSE;
-    miscMemOp.srcRegNumA.isFP = FALSE;
-    miscMemOp.srcRegNumB.isFP = FALSE;
-`endif
-    miscMemOp.dstRegNum.regNum  = '0;
-    miscMemOp.srcRegNumA.regNum = '0;
-    miscMemOp.srcRegNumB.regNum = '0;
-    miscMemOp.padding = '0;
-    miscMemOp.riscv_padding = '0;
-
-    if (opFunct3 == MISC_MEM_FUNCT3_FENCE) begin
-        miscMemOp.fence = TRUE;
-        miscMemOp.fenceI = FALSE;
-    end 
-    else if (opFunct3 == MISC_MEM_FUNCT3_FENCE_I) begin
-        miscMemOp.fence = TRUE;
-        miscMemOp.fenceI = TRUE;
-    end 
-    else begin
-        miscMemOp.fence = FALSE;
-        miscMemOp.fenceI = FALSE;
-    end
-
-    opInfo.operand.miscMemOp = miscMemOp;
-
-    // レジスタ書き込みを行うかどうか
-    // FENCE/FENCE.I Does not write any registers 
-    opInfo.writeReg  = FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_IMM;
-    opInfo.opTypeB = OOT_IMM;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_MEM;
-    opInfo.mopSubType.memType = MEM_MOP_TYPE_FENCE;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-
-    opInfo.valid = TRUE;
-
-    opInfo.unsupported = FALSE;
-    if (miscMemOp.fence) begin
-        opInfo.undefined = FALSE;
-    end
-    else begin
-        // Unknown misc mem
-        opInfo.undefined = TRUE;
-    end
-
-    // Serialized
-    opInfo.serialized = TRUE;
-endfunction
-
-function automatic void RISCV_DecodeMiscMem(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo miscMemOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitMiscMemOp(
-        .opInfo(miscMemOp),
-        .isf(isf)
-    );
-
-    // Initizalize
-    mid = 0;
-    for (int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(miscMemOp, mid, FALSE, TRUE);
-
-    insnInfo.writePC    = FALSE;
-    insnInfo.isCall     = FALSE;
-    insnInfo.isReturn   = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = TRUE;
-
-endfunction
-
-
-//
-// --- System
-//
-function automatic void RISCV_EmitCSR_Op(
-    output OpInfo opInfo,
-    input RISCV_ISF_Common isf
-);
-    RISCV_ISF_SYSTEM isfSystem;
-    SystemFunct3 opFunct3;
-    MemMicroOpOperand memOp;    // Decoded as a memory op
-
-    isfSystem = isf;
-    opFunct3 = SystemFunct3'(isfSystem.funct3);
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    memOp.dstRegNum.isFP  = FALSE;
-    memOp.srcRegNumA.isFP = FALSE;
-    memOp.srcRegNumB.isFP = FALSE;
-`endif
-    memOp.dstRegNum.regNum  = isfSystem.rd;
-    memOp.srcRegNumA.regNum = isfSystem.rs1;
-    memOp.srcRegNumB.regNum = '0;
-    memOp.padding = '0;
-
-    // Don't care
-    memOp.isAddAddr = FALSE;
-    memOp.isRegAddr = FALSE;
-    memOp.memAccessMode = '0;
-
-    // コードの設定
-    unique case (opFunct3)
-        default: begin  // SYSTEM_FUNCT3_PRIV or unknown
-            memOp.csrCtrl.code = CSR_WRITE;
-        end
-        SYSTEM_FUNCT3_CSR_RW, SYSTEM_FUNCT3_CSR_RW_I: begin
-            memOp.csrCtrl.code = CSR_WRITE;
-        end
-        SYSTEM_FUNCT3_CSR_RS, SYSTEM_FUNCT3_CSR_RS_I: begin
-            memOp.csrCtrl.code = CSR_SET;
-        end
-        SYSTEM_FUNCT3_CSR_RC, SYSTEM_FUNCT3_CSR_RC_I: begin
-            memOp.csrCtrl.code = CSR_CLEAR;
-        end
-    endcase
-
-    // CSR number
-    memOp.addrIn = isfSystem.funct12;
-
-    // CSR 命令の即値だけは特殊なので REG にしておき，ユニット側で対処する
-    memOp.csrCtrl.isImm = 
-        (opFunct3 inside {
-            SYSTEM_FUNCT3_CSR_RW, 
-            SYSTEM_FUNCT3_CSR_RS, 
-            SYSTEM_FUNCT3_CSR_RC
-        }) ? FALSE : TRUE;
-    memOp.csrCtrl.imm = isfSystem.rs1;   // rs1 がちょうど即値になる
-
-    opInfo.operand.memOp = memOp;
-
-    // レジスタ書き込みを行うかどうか
-    // CSR 系は基本全て書き込む
-    // ゼロレジスタへの書き込みは書き込みフラグをFALSEとする
-    opInfo.writeReg  = (isfSystem.rd != ZERO_REGISTER) ? TRUE : FALSE;
-
-
-    // 論理レジスタを読むかどうか
-    // CSR 命令の即値だけは特殊なので REG にしておき，ユニット側で対処する
-    opInfo.opTypeA = OOT_REG;  
-    opInfo.opTypeB = OOT_IMM;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_MEM;
-    opInfo.mopSubType.memType = MEM_MOP_TYPE_CSR;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    opInfo.valid = TRUE;
-
-    opInfo.unsupported = FALSE;
-    opInfo.undefined = 
-        opFunct3 == SYSTEM_FUNCT3_UNDEFINED ? TRUE : FALSE;
-
-    // Serialized
-    opInfo.serialized = TRUE;
-endfunction
-
-
-function automatic void RISCV_EmitSystemOp(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf
-);
-    RISCV_ISF_SYSTEM isfSystem;
-    SystemFunct3  opFunct3;
-    SystemFunct12 opFunct12;
-    SystemMicroOpOperand systemOp;
-    logic undefined;
-
-    isfSystem = isf;
-    opFunct3 = SystemFunct3'(isfSystem.funct3);
-    opFunct12 = SystemFunct12'(isfSystem.funct12);
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    systemOp.dstRegNum.isFP  = FALSE;
-    systemOp.srcRegNumA.isFP = FALSE;
-    systemOp.srcRegNumB.isFP = FALSE;
-`endif
-    systemOp.dstRegNum.regNum  = '0;
-    systemOp.srcRegNumA.regNum = '0;
-    systemOp.srcRegNumB.regNum = '0;
-    systemOp.isEnv = TRUE;
-    systemOp.padding = '0;
-    systemOp.imm = '0;
-
-    undefined = FALSE;
-
-    // コードの設定
-    if (opFunct12 == SYSTEM_FUNCT12_WFI) begin
-        // NOP 扱いにしておく
-        opInfo.mopType = MOP_TYPE_INT;
-        opInfo.mopSubType.intType = INT_MOP_TYPE_ALU;
-        systemOp.envCode = ENV_BREAK;
-    end
-    else begin
-        unique case(SystemFunct12'(isfSystem.funct12))
-            SYSTEM_FUNCT12_ECALL:  systemOp.envCode = ENV_CALL;
-            SYSTEM_FUNCT12_EBREAK: systemOp.envCode = ENV_BREAK;
-            SYSTEM_FUNCT12_MRET:   systemOp.envCode = ENV_MRET;
-            default: begin// Unknown
-                systemOp.envCode = ENV_BREAK;            
-                undefined = TRUE;
-            end
-        endcase
-
-        // 命令の種類
-        opInfo.mopType = MOP_TYPE_MEM;
-        opInfo.mopSubType.memType = MEM_MOP_TYPE_ENV;
-    end
-
-    opInfo.operand.systemOp = systemOp;
-
-    // レジスタ書き込みを行うかどうか
-    opInfo.writeReg  = FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_IMM;
-    opInfo.opTypeB = OOT_IMM;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    opInfo.valid = TRUE;
-
-    opInfo.unsupported = FALSE;
-    opInfo.undefined = undefined;
-
-    // Serialized
-    opInfo.serialized = TRUE;
-endfunction
-
-
-function automatic void RISCV_DecodeSystem(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo opInfo;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    if (SystemFunct3'(isf.funct3) == SYSTEM_FUNCT3_PRIV) begin
-        RISCV_EmitSystemOp(.opInfo(opInfo), .isf(isf));
-    end
-    else begin 
-        RISCV_EmitCSR_Op(.opInfo(opInfo), .isf(isf));
-    end
-
-    // Initizalize
-    mid = 0;
-    for (int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(opInfo, mid, FALSE, TRUE);
-
-    insnInfo.writePC    = FALSE;
-    insnInfo.isCall     = FALSE;
-    insnInfo.isReturn   = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = TRUE;   // A system instruction must be serialized
-
-endfunction
-
-`ifdef RSD_MARCH_FP_PIPE
-//
-// --- FP ld/st
-//
-function automatic void RISCV_EmitFPMemOp(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf
-);
-    RISCV_ISF_S isfS;
-    RISCV_ISF_I isfI;
-    MemFunct3 memFunct3;
-    logic isLoad;
-
-    MemAccessMode memAccessMode;
-
-    isfS = isf;
-    isfI = isf;
-    memFunct3 = MemFunct3'(isfS.funct3);
-    isLoad = ( isfI.opCode == RISCV_F_LD );
-
-    // 論理レジスタ番号
-    opInfo.operand.memOp.dstRegNum.isFP  = TRUE;
-    opInfo.operand.memOp.srcRegNumA.isFP = FALSE;
-    opInfo.operand.memOp.srcRegNumB.isFP = TRUE;
-    opInfo.operand.memOp.dstRegNum.regNum  = isLoad ? isfI.rd : '0;
-    opInfo.operand.memOp.srcRegNumA.regNum = isfI.rs1;
-    opInfo.operand.memOp.srcRegNumB.regNum = isLoad ? '0 : isfS.rs2;
-    
-    opInfo.operand.memOp.csrCtrl = '0; // unused
-    opInfo.operand.memOp.padding = '0;
-
-    // レジスタ書き込みを行うかどうか
-    // fp registerにはゼロレジスタが無い
-    opInfo.writeReg  = isLoad;
-
-    // 論理レジスタを読むかどうか
-    // ストア時はBを読む
-    opInfo.opTypeA = OOT_REG;
-    opInfo.opTypeB = isLoad ? OOT_IMM : OOT_REG;
-    opInfo.opTypeC = OOT_IMM;
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_MEM;
-    opInfo.mopSubType.memType = isLoad ? MEM_MOP_TYPE_LOAD : MEM_MOP_TYPE_STORE;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // アドレッシング
-    opInfo.operand.memOp.addrIn    = isLoad ? isfI.imm : {isfS.imm2, isfS.imm1};
-    opInfo.operand.memOp.isAddAddr = TRUE;
-    opInfo.operand.memOp.isRegAddr = TRUE;
-    RISCV_DecodeMemAccessMode( memAccessMode, memFunct3 );
-    opInfo.operand.memOp.memAccessMode = memAccessMode;
-
-    opInfo.valid = TRUE;
-
-    opInfo.unsupported = FALSE;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-endfunction
-
-function automatic void RISCV_DecodeFPMemOp(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo memOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitFPMemOp(
-        .opInfo( memOp ),
-        .isf( isf )
-    );
-
-    // Initizalize
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(memOp, mid, FALSE, TRUE);
-
-    insnInfo.writePC    = FALSE;
-    insnInfo.isCall     = FALSE;
-    insnInfo.isReturn   = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = FALSE;
-endfunction
-
-//
-// --- FP Op
-//
-function automatic void RISCV_EmitFPOp(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf,
-    input LScalarRegNumPath srcRegNumA,
-    input LScalarRegNumPath srcRegNumB,
-    input LScalarRegNumPath dstRegNum
-);
-    RISCV_ISF_R isfR;
-    RV32FFunct3 rv32fFunct3;
-    RV32FFunct7 rv32fFunct7;
-    FCVTFunct5  fcvtfunct5;
-    logic dstFP, rs1FP, readrs2;
-
-    FPU_Code fpuCode;
-    Rounding_Mode rm;
-
-    isfR = isf;
-    rv32fFunct3 = RV32FFunct3'(isfR.funct3);
-    rv32fFunct7 = RV32FFunct7'(isfR.funct7);
-    fcvtfunct5  = FCVTFunct5'(isfR.rs2);
-    rm = Rounding_Mode'(isfR.funct3);
-
-    RISCV_DecodeFPOpFunct3( fpuCode, rv32fFunct3, rv32fFunct7, fcvtfunct5);
-    dstFP   = !(fpuCode inside {FC_FCVT_WS, FC_FCVT_WUS, FC_FMV_XW, FC_FEQ, FC_FLT, FC_FLE, FC_FCLASS});
-    rs1FP   = !(fpuCode inside {FC_FCVT_SW, FC_FCVT_SWU, FC_FMV_WX});
-    readrs2 = !(fpuCode inside {FC_SQRT, FC_FCVT_SW, FC_FCVT_SWU, FC_FCVT_WS, FC_FCVT_WUS, FC_FMV_WX, FC_FMV_XW, FC_FCLASS});
-    
-    // 論理レジスタ番号
-    opInfo.operand.fpOp.dstRegNum.isFP  = dstFP;
-    opInfo.operand.fpOp.srcRegNumA.isFP = rs1FP;
-    opInfo.operand.fpOp.srcRegNumB.isFP = TRUE;
-    opInfo.operand.fpOp.srcRegNumC.isFP = TRUE;
-    opInfo.operand.fpOp.dstRegNum.regNum  = dstRegNum;
-    opInfo.operand.fpOp.srcRegNumA.regNum = srcRegNumA;
-    opInfo.operand.fpOp.srcRegNumB.regNum = srcRegNumB;
-    opInfo.operand.fpOp.srcRegNumC.regNum = '0;
-
-    // Rounding Mode
-    opInfo.operand.fpOp.rm = rm;
-
-    // FPU
-    opInfo.operand.fpOp.fpuCode = fpuCode;
-    opInfo.operand.fpOp.padding = '0;
-
-    // レジスタ書き込みを行うかどうか
-    // fp registerにはゼロレジスタが無い
-    opInfo.writeReg  = ( dstFP || dstRegNum != ZERO_REGISTER ) ? TRUE : FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_REG;
-    opInfo.opTypeB = readrs2 ? OOT_REG : OOT_IMM;
-    opInfo.opTypeC = OOT_IMM;
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_FP;
-    opInfo.mopSubType.fpType = (fpuCode == FC_ADD || fpuCode == FC_SUB ) ? FP_MOP_TYPE_ADD  :
-                                                    (fpuCode == FC_MUL ) ? FP_MOP_TYPE_MUL  :
-                                                    (fpuCode == FC_DIV ) ? FP_MOP_TYPE_DIV  :
-                                                    (fpuCode == FC_SQRT) ? FP_MOP_TYPE_SQRT : FP_MOP_TYPE_OTHER;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // 未定義命令
-    opInfo.unsupported = FALSE;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-
-    // Control
-    opInfo.valid = TRUE;    // Valid outputs
-endfunction
-
-function automatic void RISCV_DecodeFPOp(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo fpOp;
-    MicroOpIndex mid;
-
-    RISCV_EmitFPOp(
-        .opInfo( fpOp ),
-        .isf( isf ),
-        .srcRegNumA( isf.rs1 ),
-        .srcRegNumB( isf.rs2 ),
-        .dstRegNum( isf.rd )
-    );
-
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(fpOp, mid, FALSE, TRUE);
-    mid += 1;
-
-    insnInfo.writePC = FALSE;
-    insnInfo.isCall = FALSE;
-    insnInfo.isReturn = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = FALSE;
-endfunction
-
-//
-// --- FP FMA Op
-//
-function automatic void RISCV_EmitFPFMAOp(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf
-);
-    RISCV_ISF_R4 isfR4;
-    RISCV_OpCode opCode;
-    FPU_Code fpuCode;
-    Rounding_Mode rm;
-
-    isfR4 = isf;
-    opCode = isfR4.opCode;
-    rm = Rounding_Mode'(isfR4.funct3);
-
-    // 論理レジスタ番号
-    opInfo.operand.fpOp.dstRegNum.isFP  = TRUE;
-    opInfo.operand.fpOp.srcRegNumA.isFP = TRUE;
-    opInfo.operand.fpOp.srcRegNumB.isFP = TRUE;
-    opInfo.operand.fpOp.srcRegNumC.isFP = TRUE;
-    opInfo.operand.fpOp.dstRegNum.regNum  = isfR4.rd;
-    opInfo.operand.fpOp.srcRegNumA.regNum = isfR4.rs1;
-    opInfo.operand.fpOp.srcRegNumB.regNum = isfR4.rs2;
-    opInfo.operand.fpOp.srcRegNumC.regNum = isfR4.rs3;
-
-    // Rounding Mode
-    opInfo.operand.fpOp.rm = rm;
-
-    // FPU
-    RISCV_DecodeFPFMAOpFunct3( fpuCode, opCode);
-    opInfo.operand.fpOp.fpuCode = fpuCode;
-    opInfo.operand.fpOp.padding = '0;
-
-    // レジスタ書き込みを行うかどうか
-    // fp registerにはゼロレジスタが無い
-    opInfo.writeReg  = TRUE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_REG;
-    opInfo.opTypeB = OOT_REG;
-    opInfo.opTypeC = OOT_REG;
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_FP;
-    opInfo.mopSubType.fpType = FP_MOP_TYPE_FMA;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // 未定義命令
-    opInfo.unsupported = FALSE;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-
-    // Control
-    opInfo.valid = TRUE;    // Valid outputs
-endfunction
-
-function automatic void  RISCV_DecodeFPFMAOp(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo fpOp;
-    MicroOpIndex mid;
-
-    RISCV_EmitFPFMAOp(
-        .opInfo( fpOp ),
-        .isf( isf )
-    );
-
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(fpOp, mid, FALSE, TRUE);
-    mid += 1;
-
-    insnInfo.writePC = FALSE;
-    insnInfo.isCall = FALSE;
-    insnInfo.isReturn = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = FALSE;
-endfunction
-
-`endif
-
-function automatic void RISCV_EmitZba(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf,
-    input LScalarRegNumPath srcRegNumA,
-    input LScalarRegNumPath srcRegNumB,
-    input LScalarRegNumPath dstRegNum,
-    input logic unsupported
-);
-    RISCV_ISF_R isfR;
-    ZbaFunct3 zbaFunct3;
-
-    IntALU_Code aluCode;
-    RISCV_IntOperandImmShift intOperandImmShift;
-
-    isfR = isf;
-    zbaFunct3 = ZbaFunct3'(isfR.funct3);
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.operand.intOp.dstRegNum.isFP  = FALSE;
-    opInfo.operand.intOp.srcRegNumA.isFP = FALSE;
-    opInfo.operand.intOp.srcRegNumB.isFP = FALSE;
-`endif
-    opInfo.operand.intOp.dstRegNum.regNum  = dstRegNum;
-    opInfo.operand.intOp.srcRegNumA.regNum = srcRegNumA;
-    opInfo.operand.intOp.srcRegNumB.regNum = srcRegNumB;
-
-    // 即値 (not used)
-    opInfo.operand.intOp.shiftType = SOT_REG_SHIFT ;
-
-    intOperandImmShift.shift        = '0;
-    intOperandImmShift.shiftType    = ST_ROR;
-    intOperandImmShift.isRegShift   = TRUE;
-    intOperandImmShift.imm          = '0;
-    intOperandImmShift.immType      = RISCV_IMM_R;
-
-    opInfo.operand.intOp.shiftIn   = intOperandImmShift;
-
-
-    // ALU
-    unique case (zbaFunct3)
-      ZBA_FUCNT3_SH1ADD: opInfo.operand.intOp.aluCode = AC_SH1ADD;
-      ZBA_FUCNT3_SH2ADD: opInfo.operand.intOp.aluCode = AC_SH2ADD;
-      ZBA_FUCNT3_SH3ADD: opInfo.operand.intOp.aluCode = AC_SH3ADD;
-      default: opInfo.operand.intOp.aluCode = AC_SH3ADD; // Unknown
-    endcase
-
-    // レジスタ書き込みを行うかどうか
-    // ゼロレジスタへの書き込みは書き込みフラグをFALSEとする
-    opInfo.writeReg  = ( dstRegNum != ZERO_REGISTER ) ? TRUE : FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_REG;
-    opInfo.opTypeB = OOT_REG;
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_INT;
-    opInfo.mopSubType.intType = INT_MOP_TYPE_ALU;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // 未定義命令
-    opInfo.unsupported = unsupported;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-
-    // Control
-    opInfo.valid = TRUE;    // Valid outputs
-endfunction
-
-function automatic void RISCV_DecodeZba(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo zbaOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitZba (
-        .opInfo( zbaOp ),
-        .isf( isf ),
-        .srcRegNumA( isf.rs1 ),
-        .srcRegNumB( isf.rs2 ),
-        .dstRegNum( isf.rd ),
-        .unsupported( FALSE )
-    );
-
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(zbaOp, mid, FALSE, TRUE);
-    mid += 1;
-
-    insnInfo.writePC = FALSE;
-    insnInfo.isCall = FALSE;
-    insnInfo.isReturn = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = FALSE;
-
-endfunction
-
-function automatic void RISCV_EmitZicond(
-    output OpInfo  opInfo,
-    input RISCV_ISF_Common isf,
-    input LScalarRegNumPath srcRegNumA,
-    input LScalarRegNumPath srcRegNumB,
-    input LScalarRegNumPath dstRegNum,
-    input logic unsupported
-);
-    RISCV_ISF_R isfR;
-    CZeroFunct3 czeroFunct3;
-
-    IntALU_Code aluCode;
-    RISCV_IntOperandImmShift intOperandImmShift;
-
-    isfR = isf;
-    czeroFunct3 = CZeroFunct3'(isfR.funct3);
-
-    // 論理レジスタ番号
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.operand.intOp.dstRegNum.isFP  = FALSE;
-    opInfo.operand.intOp.srcRegNumA.isFP = FALSE;
-    opInfo.operand.intOp.srcRegNumB.isFP = FALSE;
-`endif
-    opInfo.operand.intOp.dstRegNum.regNum  = dstRegNum;
-    opInfo.operand.intOp.srcRegNumA.regNum = srcRegNumA;
-    opInfo.operand.intOp.srcRegNumB.regNum = srcRegNumB;
-
-    // 即値 (not used)
-    opInfo.operand.intOp.shiftType = SOT_REG_SHIFT ;
-
-    intOperandImmShift.shift        = '0;
-    intOperandImmShift.shiftType    = ST_ROR;
-    intOperandImmShift.isRegShift   = TRUE;
-    intOperandImmShift.imm          = '0;
-    intOperandImmShift.immType      = RISCV_IMM_R;
-
-    opInfo.operand.intOp.shiftIn   = intOperandImmShift;
-
-
-    // ALU
-    opInfo.operand.intOp.aluCode = (czeroFunct3 == CZERO_FUCNT3_EQZ) ? AC_EQZ : AC_NEZ;
-
-    // レジスタ書き込みを行うかどうか
-    // ゼロレジスタへの書き込みは書き込みフラグをFALSEとする
-    opInfo.writeReg  = ( dstRegNum != ZERO_REGISTER ) ? TRUE : FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_REG;
-    opInfo.opTypeB = OOT_REG;
-`ifdef RSD_MARCH_FP_PIPE
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_INT;
-    opInfo.mopSubType.intType = INT_MOP_TYPE_ALU;
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-
-    // 未定義命令
-    opInfo.unsupported = unsupported;
-    opInfo.undefined = FALSE;
-
-    // Serialized
-    opInfo.serialized = FALSE;
-
-    // Control
-    opInfo.valid = TRUE;    // Valid outputs
-endfunction
-
-function automatic void RISCV_DecodeZicond(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf
-);
-    OpInfo zicondOp;
-    MicroOpIndex mid;
-
-    //RISCVでは複数micro opへの分割は基本的に必要ないはず
-
-    RISCV_EmitZicond (
-        .opInfo( zicondOp ),
-        .isf( isf ),
-        .srcRegNumA( isf.rs1 ),
-        .srcRegNumB( isf.rs2 ),
-        .dstRegNum( isf.rd ),
-        .unsupported( FALSE )
-    );
-
-    mid = 0;
-    for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(zicondOp, mid, FALSE, TRUE);
-    mid += 1;
-
-    insnInfo.writePC = FALSE;
-    insnInfo.isCall = FALSE;
-    insnInfo.isReturn = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = FALSE;
-
-endfunction
-
-
-function automatic void RISCV_EmitIllegalOp(
-    output OpInfo opInfo,
     input logic illegalPC
 );
-    RISCV_ISF_SYSTEM isfSystem;
-    SystemFunct3  opFunct3;
-    SystemFunct12 opFunct12;
-    SystemMicroOpOperand systemOp;
-    logic undefined;
 
-    // 論理レジスタ番号
+    // ============================================================
+    // Field extraction (fixed positions across all formats)
+    // ============================================================
+    M65_OpCode opcode;
+    logic [5:0] rd_raw, rs1_raw, rs2_raw;
+    logic fBit;
+
+    assign opcode  = M65_OpCode'(insn[31:26]);
+    assign rd_raw  = insn[25:20];
+    assign rs1_raw = insn[19:14];
+    assign rs2_raw = insn[13:8];
+    assign fBit    = insn[0];
+
+    // B21 fields
+    logic [3:0] cond4;
+    logic       linkBit;
+    logic [20:0] off21;
+    assign cond4   = insn[25:22];
+    assign linkBit = insn[21];
+    assign off21   = insn[20:0];
+
+    // J26 fields
+    logic [25:0] target26;
+    assign target26 = insn[25:0];
+
+    // I13F immediate
+    logic [12:0] imm13;
+    assign imm13 = insn[13:1];
+
+    // M14 offset
+    logic [13:0] off14;
+    assign off14 = insn[13:0];
+
+    // U20 immediate
+    logic [19:0] imm20;
+    assign imm20 = insn[19:0];
+
+    // R3 func7
+    logic [6:0] func7;
+    assign func7 = insn[7:1];
+
+    // STACK fields
+    logic       pushPull;
+    logic [5:0] stackReg;
+    assign pushPull = insn[25];
+    assign stackReg = insn[24:19];
+
+    // ============================================================
+    // Helper: construct LRegNumPath from a 6-bit integer register index
+    // ============================================================
+    function automatic LRegNumPath IntReg(input logic [5:0] idx);
 `ifdef RSD_MARCH_FP_PIPE
-    systemOp.dstRegNum.isFP  = FALSE;
-    systemOp.srcRegNumA.isFP = FALSE;
-    systemOp.srcRegNumB.isFP = FALSE;
+        return {1'b0, idx};
+`else
+        return idx;
 `endif
-    systemOp.dstRegNum.regNum  = '0;
-    systemOp.srcRegNumA.regNum = '0;
-    systemOp.srcRegNumB.regNum = '0;
-    systemOp.isEnv = TRUE;
-    systemOp.padding = '0;
-    systemOp.imm = '0;
+    endfunction
 
-    undefined = FALSE;
+    function automatic LRegNumPath ZeroReg();
+        return IntReg(6'h0);
+    endfunction
 
-    // コードの設定
-    systemOp.envCode = illegalPC ? ENV_INSN_VIOLATION : ENV_INSN_ILLEGAL;
+    // SP register for STACK instructions
+    localparam logic [5:0] SP_REG = 6'd59;
+    // T register for MUL high / implicit link
+    localparam logic [5:0] T_REG = 6'd63;
 
-    // 命令の種類
-    opInfo.mopType = MOP_TYPE_MEM;
-    opInfo.mopSubType.memType = MEM_MOP_TYPE_ENV;
+    // ============================================================
+    // Decode logic
+    // ============================================================
+    OpInfo op;
+    InsnInfo info;
 
-    opInfo.operand.systemOp = systemOp;
-
-    // レジスタ書き込みを行うかどうか
-    opInfo.writeReg  = FALSE;
-
-    // 論理レジスタを読むかどうか
-    opInfo.opTypeA = OOT_IMM;
-    opInfo.opTypeB = OOT_IMM;
-`ifdef RSD_MARCH_FP_PIPE 
-    opInfo.opTypeC = OOT_IMM;
-`endif
-
-    // 条件コード
-    opInfo.cond = COND_AL;
-    opInfo.valid = TRUE;
-    opInfo.unsupported = FALSE;
-    opInfo.undefined = undefined;
-
-    // Serialized
-    opInfo.serialized = TRUE;
-endfunction
-
-function automatic void RISCV_DecodeIllegal(
-    output OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,
-    output InsnInfo insnInfo,
-    input RISCV_ISF_Common isf,
-    input illegalPC
-);
-    OpInfo opInfo;
-    MicroOpIndex mid;
-
-    RISCV_EmitIllegalOp(opInfo, illegalPC);
-
-    // Initizalize
-    mid = 0;
-    for (int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-        EmitInvalidOp(microOps[i]);
-    end
-
-    // --- 1
-    // It begins at 1 for aligning outputs to DecodeIntReg.
-    microOps[1] = ModifyMicroOp(opInfo, mid, FALSE, TRUE);
-
-    insnInfo.writePC    = FALSE;
-    insnInfo.isCall     = FALSE;
-    insnInfo.isReturn   = FALSE;
-    insnInfo.isRelBranch = FALSE;
-    insnInfo.isSerialized = TRUE;   // A system instruction must be serialized
-
-endfunction
-//
-// --- DecodeStageでインスタンシエートされるモジュール
-//
-module Decoder(
-input
-    InsnPath insn,      // Input instruction
-    logic illegalPC,
-output
-    OpInfo [MICRO_OP_MAX_NUM-1:0] microOps,  // Outputed micro ops
-    InsnInfo insnInfo  // Whether this instruction is branch or not.
-);
-    RISCV_ISF_Common isf;
-    RV32MFunct7 rv32mFunct7;
-    ZbaFunct7 zbaFunct7;
-    ZicondFunct7 zicondFunct7;
-    logic undefined;
-    
     always_comb begin
-        isf  = insn;
-        rv32mFunct7 = RV32MFunct7'(isf.funct7);
-        zbaFunct7 = ZbaFunct7'(isf.funct7);
-        zicondFunct7 = ZicondFunct7'(isf.funct7);
-        
-        insnInfo.writePC = FALSE;
-        insnInfo.isCall = FALSE;
-        insnInfo.isReturn = FALSE;
-        insnInfo.isRelBranch = FALSE;
-        insnInfo.isSerialized = FALSE;
+        // ---- Defaults ----
+        op = '0;
+        op.valid = !illegalPC;
+        op.last  = TRUE;
+        op.mid   = '0;
+        op.cond  = COND_AL;
+        op.mopType = MOP_TYPE_INT;
+        op.mopSubType.intType = INT_MOP_TYPE_ALU;
+        op.opTypeA = OOT_REG;
+        op.opTypeB = OOT_REG;
+        op.operand.intOp.dstRegNum  = ZeroReg();
+        op.operand.intOp.srcRegNumA = ZeroReg();
+        op.operand.intOp.srcRegNumB = ZeroReg();
+        op.operand.intOp.aluCode    = AC_ADD;
+        op.operand.intOp.shiftType  = SOT_IMM_SHIFT;
+        op.operand.intOp.shiftIn    = '0;
 
-        case (isf.opCode)
+        info = '0;
 
-            // S: LOAD, STORE
-            RISCV_LD, RISCV_ST : begin
-                RISCV_DecodeMemOp(microOps, insnInfo, insn);
-            end
+        case (opcode)
 
-            // B: BRANCH
-            RISCV_BR : begin
-                RISCV_DecodeBranch(microOps, insnInfo, insn);
-            end
-            // I: JALR
-            RISCV_JALR : begin
-                RISCV_DecodeJALR(microOps, insnInfo, insn);
-            end
-            // J: JAL
-            RISCV_JAL : begin
-                RISCV_DecodeJAL(microOps, insnInfo, insn);
-            end
+        // ============================================================
+        // Core ALU (R3 format): ADD, SUB, AND, OR, XOR, SLT, SLTU, CMP
+        // ============================================================
+        M65_ADD: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_ADD;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.intOp.srcRegNumB = IntReg(rs2_raw);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
 
-            // I: OP-IMM
-            RISCV_OP_IMM : begin
-                RISCV_DecodeOpImm(microOps, insnInfo, insn);
-            end
+        M65_SUB: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_SUB;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.intOp.srcRegNumB = IntReg(rs2_raw);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
 
-            // R: OP
-            RISCV_OP : begin
-                if (rv32mFunct7 == RV32M_FUNCT7_ALL) begin
-                    RISCV_DecodeComplexOp(microOps, insnInfo, insn);
+        M65_AND: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_AND;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.intOp.srcRegNumB = IntReg(rs2_raw);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_OR: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_ORR;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.intOp.srcRegNumB = IntReg(rs2_raw);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_XOR: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_EOR;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.intOp.srcRegNumB = IntReg(rs2_raw);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_SLT: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_SLT;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.intOp.srcRegNumB = IntReg(rs2_raw);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_SLTU: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_SLTU;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.intOp.srcRegNumB = IntReg(rs2_raw);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_CMP: begin
+            // CMP = SUB with result discarded (rd=R0 implied, flags always set)
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_SUB;
+            op.operand.intOp.dstRegNum  = ZeroReg();
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.intOp.srcRegNumB = IntReg(rs2_raw);
+            op.writeReg   = FALSE;
+            op.writeFlags = TRUE;
+        end
+
+        // ============================================================
+        // Core ALU immediate (I13F format)
+        // ============================================================
+        M65_ADDI: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_ADD;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.opTypeB = OOT_IMM;
+            op.operand.intOp.shiftIn = PackI13Signed(imm13, fBit);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_SUBI: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_SUB;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.opTypeB = OOT_IMM;
+            op.operand.intOp.shiftIn = PackI13Signed(imm13, fBit);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_ANDI: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_AND;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.opTypeB = OOT_IMM;
+            op.operand.intOp.shiftIn = PackI13Unsigned(imm13, fBit);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_ORI: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_ORR;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.opTypeB = OOT_IMM;
+            op.operand.intOp.shiftIn = PackI13Unsigned(imm13, fBit);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_XORI: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_EOR;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.opTypeB = OOT_IMM;
+            op.operand.intOp.shiftIn = PackI13Unsigned(imm13, fBit);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_SLTI: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_SLT;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.opTypeB = OOT_IMM;
+            op.operand.intOp.shiftIn = PackI13Signed(imm13, fBit);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_SLTUI: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_SLTU;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.opTypeB = OOT_IMM;
+            op.operand.intOp.shiftIn = PackI13Unsigned(imm13, fBit);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_CMPI: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_SUB;
+            op.operand.intOp.dstRegNum  = ZeroReg();
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.opTypeB = OOT_IMM;
+            op.operand.intOp.shiftIn = PackI13Signed(imm13, 1'b1);
+            op.writeReg   = FALSE;
+            op.writeFlags = TRUE;
+        end
+
+        // ============================================================
+        // Shifts
+        // ============================================================
+        M65_SHIFT_R: begin
+            // R3 format: func7[2:0] = shift kind
+            op.mopSubType.intType = INT_MOP_TYPE_SHIFT;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.intOp.srcRegNumB = IntReg(rs2_raw);
+            op.operand.intOp.shiftType  = SOT_REG_SHIFT;
+            op.operand.intOp.shiftIn    = PackShiftReg(func7[2:0], fBit);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        M65_SHIFT_I: begin
+            // I13F format: imm13[12:10] = kind, imm13[4:0] = shamt
+            op.mopSubType.intType = INT_MOP_TYPE_SHIFT;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.intOp.shiftType  = SOT_IMM_SHIFT;
+            op.opTypeB = OOT_IMM;
+            op.operand.intOp.shiftIn    = PackShiftImm(imm13, fBit);
+            op.writeReg   = (rd_raw != 6'h0);
+            op.writeFlags = fBit;
+        end
+
+        // ============================================================
+        // XFER (MOV): R3 format, implemented as ADD rd, rs1, R0
+        // ============================================================
+        M65_XFER: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_ADD;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.intOp.srcRegNumB = ZeroReg();
+            op.writeReg   = (rd_raw != 6'h0);
+            // Transfers are always flagless in m65832.
+            op.writeFlags = FALSE;
+        end
+
+        // ============================================================
+        // MUL / DIV (complex pipeline, R3 format)
+        // ============================================================
+        M65_MUL: begin
+            op.mopType = MOP_TYPE_COMPLEX;
+            op.mopSubType.complexType = COMPLEX_MOP_TYPE_MUL;
+            op.operand.complexOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.complexOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.complexOp.srcRegNumB = IntReg(rs2_raw);
+            op.operand.complexOp.mulCode    = AC_MUL;
+            op.operand.complexOp.divCode    = AC_DIV;
+            op.operand.complexOp.mulGetUpper = FALSE;
+            op.writeReg = (rd_raw != 6'h0);
+        end
+
+        M65_DIV: begin
+            op.mopType = MOP_TYPE_COMPLEX;
+            op.mopSubType.complexType = COMPLEX_MOP_TYPE_DIV;
+            op.operand.complexOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.complexOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.complexOp.srcRegNumB = IntReg(rs2_raw);
+            op.operand.complexOp.mulCode    = AC_MUL;
+            op.operand.complexOp.divCode    = AC_DIV;
+            op.operand.complexOp.mulGetUpper = FALSE;
+            op.writeReg = (rd_raw != 6'h0);
+        end
+
+        // ============================================================
+        // Load / Store (M14 format, memory pipeline)
+        // ============================================================
+        M65_LD: begin
+            op.mopType = MOP_TYPE_MEM;
+            op.mopSubType.memType = MEM_MOP_TYPE_LOAD;
+            op.operand.memOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.memOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.memOp.srcRegNumB = ZeroReg();
+            op.operand.memOp.isAddAddr  = TRUE;
+            op.operand.memOp.isRegAddr  = FALSE;
+            op.operand.memOp.memAccessMode.isSigned = TRUE;
+            op.operand.memOp.memAccessMode.size = MEM_ACCESS_SIZE_WORD;
+            op.operand.memOp.addrIn.imm = off14;
+            op.writeReg = (rd_raw != 6'h0);
+        end
+
+        M65_ST: begin
+            op.mopType = MOP_TYPE_MEM;
+            op.mopSubType.memType = MEM_MOP_TYPE_STORE;
+            op.operand.memOp.dstRegNum  = IntReg(rd_raw);  // source data register
+            op.operand.memOp.srcRegNumA = IntReg(rs1_raw);  // base address
+            // Store data is carried in operand B in the memory pipeline.
+            op.operand.memOp.srcRegNumB = IntReg(rd_raw);
+            op.operand.memOp.isAddAddr  = TRUE;
+            op.operand.memOp.isRegAddr  = FALSE;
+            op.operand.memOp.memAccessMode.isSigned = FALSE;
+            op.operand.memOp.memAccessMode.size = MEM_ACCESS_SIZE_WORD;
+            op.operand.memOp.addrIn.imm = off14;
+            op.writeReg = FALSE;
+        end
+
+        // ============================================================
+        // LUI / AUIPC (U20 format)
+        // ============================================================
+        M65_LUI: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_ADD;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = ZeroReg();  // R0 = 0
+            op.opTypeB = OOT_IMM;
+            op.operand.intOp.shiftIn = PackU20(imm20);
+            op.writeReg = (rd_raw != 6'h0);
+        end
+
+        M65_AUIPC: begin
+            op.mopSubType.intType = INT_MOP_TYPE_ALU;
+            op.operand.intOp.aluCode    = AC_ADD;
+            op.operand.intOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.intOp.srcRegNumA = ZeroReg();
+            op.opTypeA = OOT_PC;  // operand A = PC
+            op.opTypeB = OOT_IMM;
+            op.operand.intOp.shiftIn = PackU20(imm20);
+            op.writeReg = (rd_raw != 6'h0);
+        end
+
+        // ============================================================
+        // Branch (B21 format)
+        // ============================================================
+        M65_BR: begin
+            op.mopSubType.intType = INT_MOP_TYPE_BR;
+            op.cond = CondCode'({1'b0, cond4}[3:0]);
+            if (cond4 <= 4'h8)
+                op.cond = CondCode'(cond4);
+            else
+                op.cond = COND_AL;
+
+            op.operand.brOp.dstRegNum  = (linkBit) ? IntReg(T_REG) : ZeroReg();
+            op.operand.brOp.srcRegNumA = ZeroReg();
+            op.operand.brOp.srcRegNumB = ZeroReg();
+            op.operand.brOp.brDisp     = off21;
+
+            op.readFlags  = (cond4 != 4'h8);  // conditional branches read flags
+            op.writeReg   = linkBit;           // BSR saves PC+4
+            op.writeFlags = FALSE;
+
+            info.writePC    = TRUE;
+            info.isRelBranch = TRUE;
+            info.isCall     = linkBit;
+        end
+
+        // ============================================================
+        // JMP_ABS (J26 format): jump to {PC[31:28], target26, 2'b00}
+        // Target is resolved at decode time by the branch resolver.
+        // ============================================================
+        M65_JMP_ABS: begin
+            op.mopSubType.intType = INT_MOP_TYPE_RIJ;
+            op.operand.brOp.dstRegNum  = ZeroReg();
+            op.operand.brOp.srcRegNumA = ZeroReg();
+            op.operand.brOp.srcRegNumB = ZeroReg();
+            op.operand.brOp.brDisp     = '0;
+            op.opTypeA = OOT_IMM;  // not register-indirect
+            op.writeReg = FALSE;
+
+            info.writePC = TRUE;
+        end
+
+        // ============================================================
+        // JMP_REG (JR format): jump to address in rs1
+        // ============================================================
+        M65_JMP_REG: begin
+            op.mopSubType.intType = INT_MOP_TYPE_RIJ;
+            op.operand.brOp.dstRegNum  = ZeroReg();
+            op.operand.brOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.brOp.srcRegNumB = ZeroReg();
+            op.operand.brOp.brDisp     = '0;
+            op.opTypeA = OOT_REG;
+            op.writeReg = FALSE;
+
+            info.writePC = TRUE;
+        end
+
+        // ============================================================
+        // JSR_ABS (J26 format): save PC+4 to T, jump to target
+        // Target is resolved at decode time by the branch resolver.
+        // ============================================================
+        M65_JSR_ABS: begin
+            op.mopSubType.intType = INT_MOP_TYPE_RIJ;
+            op.operand.brOp.dstRegNum  = IntReg(T_REG);
+            op.operand.brOp.srcRegNumA = ZeroReg();
+            op.operand.brOp.srcRegNumB = ZeroReg();
+            op.operand.brOp.brDisp     = '0;
+            op.opTypeA = OOT_IMM;  // not register-indirect
+            op.writeReg = TRUE;
+
+            info.writePC = TRUE;
+            info.isCall  = TRUE;
+        end
+
+        // ============================================================
+        // JSR_REG (JR format): save PC+4 to rd, jump to rs1
+        // ============================================================
+        M65_JSR_REG: begin
+            op.mopSubType.intType = INT_MOP_TYPE_RIJ;
+            op.operand.brOp.dstRegNum  = IntReg(rd_raw);
+            op.operand.brOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.brOp.srcRegNumB = ZeroReg();
+            op.operand.brOp.brDisp     = '0;
+            op.opTypeA = OOT_REG;
+            op.writeReg = (rd_raw != 6'h0);
+
+            info.writePC = TRUE;
+            info.isCall  = TRUE;
+        end
+
+        // ============================================================
+        // RTS (JR format): jump to address in rs1
+        // ============================================================
+        M65_RTS: begin
+            op.mopSubType.intType = INT_MOP_TYPE_RIJ;
+            op.operand.brOp.dstRegNum  = ZeroReg();
+            op.operand.brOp.srcRegNumA = IntReg(rs1_raw);
+            op.operand.brOp.srcRegNumB = ZeroReg();
+            op.operand.brOp.brDisp     = '0;
+            op.opTypeA = OOT_REG;
+            op.writeReg = FALSE;
+
+            info.writePC = TRUE;
+            info.isReturn = TRUE;
+        end
+
+        // ============================================================
+        // STACK (push/pull via SP) -- mark as unsupported for now;
+        // compiler decomposes to explicit SUB/ADD + LD/ST
+        // ============================================================
+        M65_STACK: begin
+            op.unsupported = TRUE;
+        end
+
+        // ============================================================
+        // SYS (TRAP, FENCE, WAI, STP)
+        // ============================================================
+        M65_SYS: begin
+            op.mopType = MOP_TYPE_MEM;
+            // Use SYS sub-opcode from imm20[2:0]
+            case (M65_SysSubOp'(imm20[2:0]))
+                M65_SYS_TRAP: begin
+                    op.mopSubType.memType = MEM_MOP_TYPE_ENV;
+                    op.operand.systemOp.dstRegNum  = ZeroReg();
+                    op.operand.systemOp.srcRegNumA = ZeroReg();
+                    op.operand.systemOp.srcRegNumB = ZeroReg();
+                    op.operand.systemOp.envCode    = ENV_TRAP;
+                    op.operand.systemOp.isEnv      = TRUE;
+                    op.operand.systemOp.imm        = imm20[11:0];
+                    op.serialized = TRUE;
                 end
-`ifdef RSD_ENABLE_ZBA
-                else if (zbaFunct7 == ZBA_FUNCT7_SHADD) begin
-                    RISCV_DecodeZba(microOps, insnInfo, insn);
+                M65_SYS_FENCE, M65_SYS_FENCER, M65_SYS_FENCEW: begin
+                    op.mopSubType.memType = MEM_MOP_TYPE_FENCE;
+                    op.operand.miscMemOp.dstRegNum  = ZeroReg();
+                    op.operand.miscMemOp.srcRegNumA = ZeroReg();
+                    op.operand.miscMemOp.srcRegNumB = ZeroReg();
+                    op.operand.miscMemOp.fence  = TRUE;
+                    op.operand.miscMemOp.fenceI = FALSE;
+                    op.serialized = TRUE;
                 end
-`endif
-`ifdef RSD_ENABLE_ZICOND
-                else if (zicondFunct7 == ZICOND_FUNCT7_CZERO) begin
-                    RISCV_DecodeZicond(microOps, insnInfo, insn);
+                M65_SYS_WAI: begin
+                    op.mopSubType.memType = MEM_MOP_TYPE_ENV;
+                    op.operand.systemOp.dstRegNum  = ZeroReg();
+                    op.operand.systemOp.srcRegNumA = ZeroReg();
+                    op.operand.systemOp.srcRegNumB = ZeroReg();
+                    op.operand.systemOp.envCode    = ENV_WAI;
+                    op.operand.systemOp.isEnv      = TRUE;
+                    op.serialized = TRUE;
                 end
-`endif
-                else begin
-                    RISCV_DecodeOp(microOps, insnInfo, insn);
+                M65_SYS_STP: begin
+                    op.mopSubType.memType = MEM_MOP_TYPE_ENV;
+                    op.operand.systemOp.dstRegNum  = ZeroReg();
+                    op.operand.systemOp.srcRegNumA = ZeroReg();
+                    op.operand.systemOp.srcRegNumB = ZeroReg();
+                    op.operand.systemOp.envCode    = ENV_STP;
+                    op.operand.systemOp.isEnv      = TRUE;
+                    op.serialized = TRUE;
                 end
-            end
+                default: begin
+                    op.undefined = TRUE;
+                end
+            endcase
+        end
 
-            // U: AUIPC, LUI
-            RISCV_AUIPC, RISCV_LUI : begin
-                RISCV_DecodeUTypeInst(microOps, insnInfo, insn);
-            end
+        // ============================================================
+        // FP operations (deferred -- mark unsupported)
+        // ============================================================
+        M65_FP_RR, M65_FP_LD, M65_FP_ST, M65_FP_CVT: begin
+            op.unsupported = TRUE;
+        end
 
-            // I: MISC-MEM (fence/fence.i)
-            RISCV_MISC_MEM : begin
-                RISCV_DecodeMiscMem(microOps, insnInfo, insn);
-            end
+        // ============================================================
+        // Deferred/complex operations
+        // ============================================================
+        M65_LDQ, M65_STQ, M65_CAS, M65_LLI, M65_SCI,
+        M65_MODE, M65_BLKMOV: begin
+            op.unsupported = TRUE;
+        end
 
-            // I: SYSTEM (ebreak/ecall/csr)
-            RISCV_SYSTEM : begin
-                RISCV_DecodeSystem(microOps, insnInfo, insn);
-            end
-`ifdef RSD_MARCH_FP_PIPE
-            RISCV_F_LD, RISCV_F_ST : begin
-                RISCV_DecodeFPMemOp(microOps, insnInfo, insn);
-            end
+        default: begin
+            op.undefined = TRUE;
+        end
 
-            RISCV_F_OP : begin
-                RISCV_DecodeFPOp(microOps, insnInfo, insn);
-            end
-
-            RISCV_F_FMADD, RISCV_F_FMSUB, RISCV_F_FNMSUB, RISCV_F_FNMADD : begin
-                RISCV_DecodeFPFMAOp(microOps, insnInfo, insn);
-            end
-`endif
-            default : begin
-                RISCV_DecodeIllegal(microOps, insnInfo, insn, illegalPC);
-            end
         endcase
 
-        undefined = FALSE;
-        for(int i = 0; i < MICRO_OP_MAX_NUM; i++) begin
-            if(microOps[i].undefined || microOps[i].unsupported) begin
-                undefined = TRUE;
-            end
-        end
-
-        if (undefined || illegalPC) begin
-            RISCV_DecodeIllegal(microOps, insnInfo, insn, illegalPC);
-        end
-
+        // ---- Output ----
+        microOps[0] = op;
+        insnInfo     = info;
     end
 
 
+    // ============================================================
+    // Immediate packing helpers
+    // ============================================================
 
-endmodule : Decoder
+    // Sign-extend 13-bit immediate to 20 bits, pack into ShifterPath
+    function automatic ShifterPath PackI13Signed(
+        input logic [12:0] imm,
+        input logic f
+    );
+        M65_IntOperandImm p;
+        p.imm       = { {7{imm[12]}}, imm };  // sign-extend 13->20
+        p.shiftType = ST_LSL;
+        p.isRegShift = 1'b0;
+        p.fBit      = f;
+        p.isSigned  = 1'b1;
+        p.immType   = M65_IMM_I13;
+        p.padding   = '0;
+        return ShifterPath'(p);
+    endfunction
 
+    // Zero-extend 13-bit immediate to 20 bits, pack into ShifterPath
+    function automatic ShifterPath PackI13Unsigned(
+        input logic [12:0] imm,
+        input logic f
+    );
+        M65_IntOperandImm p;
+        p.imm       = { 7'b0, imm };  // zero-extend 13->20
+        p.shiftType = ST_LSL;
+        p.isRegShift = 1'b0;
+        p.fBit      = f;
+        p.isSigned  = 1'b0;
+        p.immType   = M65_IMM_I13;
+        p.padding   = '0;
+        return ShifterPath'(p);
+    endfunction
 
+    // Pack U20 immediate (for LUI/AUIPC)
+    function automatic ShifterPath PackU20(
+        input logic [19:0] imm
+    );
+        M65_IntOperandImm p;
+        p.imm       = imm;
+        p.shiftType = ST_LSL;
+        p.isRegShift = 1'b0;
+        p.fBit      = 1'b0;
+        p.isSigned  = 1'b0;
+        p.immType   = M65_IMM_U20;
+        p.padding   = '0;
+        return ShifterPath'(p);
+    endfunction
 
+    // Pack register shift (SHIFT_R): kind from func7[2:0]
+    function automatic ShifterPath PackShiftReg(
+        input logic [2:0] kind,
+        input logic f
+    );
+        M65_IntOperandImm p;
+        p.imm       = '0;
+        p.isRegShift = 1'b1;
+        p.fBit      = f;
+        p.isSigned  = 1'b0;
+        p.immType   = M65_IMM_SHFT;
+        p.padding   = '0;
+        case (kind)
+            3'd0: p.shiftType = ST_LSL;
+            3'd1: p.shiftType = ST_LSR;
+            3'd2: p.shiftType = ST_ASR;
+            3'd3: p.shiftType = ST_ROR;  // ROL mapped to ROR (amount inverted in exec)
+            3'd4: p.shiftType = ST_ROR;
+            default: p.shiftType = ST_LSL;
+        endcase
+        return ShifterPath'(p);
+    endfunction
+
+    // Pack immediate shift (SHIFT_I): imm13[12:10]=kind, imm13[4:0]=shamt
+    function automatic ShifterPath PackShiftImm(
+        input logic [12:0] imm,
+        input logic f
+    );
+        M65_IntOperandImm p;
+        p.imm       = {15'b0, imm[4:0]};  // shift amount in low 5 bits
+        p.isRegShift = 1'b0;
+        p.fBit      = f;
+        p.isSigned  = 1'b0;
+        p.immType   = M65_IMM_SHFT;
+        p.padding   = '0;
+        case (imm[12:10])
+            3'd0: p.shiftType = ST_LSL;
+            3'd1: p.shiftType = ST_LSR;
+            3'd2: p.shiftType = ST_ASR;
+            3'd3: p.shiftType = ST_ROR;
+            3'd4: p.shiftType = ST_ROR;
+            default: p.shiftType = ST_LSL;
+        endcase
+        return ShifterPath'(p);
+    endfunction
+
+endmodule

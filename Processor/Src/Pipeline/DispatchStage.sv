@@ -94,10 +94,14 @@ module DispatchStage(
 `ifdef RSD_MARCH_FP_PIPE
             opSrc[i].phySrcRegNumC = pipeReg[i].phySrcRegNumC;
 `endif
+            opSrc[i].readFlags = pipeReg[i].opInfo.readFlags;
+            opSrc[i].phySrcFlagsRegNum = pipeReg[i].phySrcFlagsRegNum;
 
             // OpDst
             opDst[i].writeReg = pipeReg[i].opInfo.writeReg;
             opDst[i].phyDstRegNum = pipeReg[i].phyDstRegNum;
+            opDst[i].writeFlags = pipeReg[i].opInfo.writeFlags;
+            opDst[i].phyFlagsDstRegNum = pipeReg[i].phyFlagsDstRegNum;
 
             //
             // --- To an integer queue.
@@ -250,8 +254,12 @@ module DispatchStage(
             schedulerEntry[i].srcRegValidA = ( opInfo[i].opTypeA == OOT_REG );
             schedulerEntry[i].srcRegValidB = ( opInfo[i].opTypeB == OOT_REG );
 `ifdef RSD_MARCH_FP_PIPE
-            schedulerEntry[i].srcRegValidC = ( opInfo[i].opTypeC == OOT_REG );
+            // Source-C is valid only for FP micro-ops.
+            schedulerEntry[i].srcRegValidC =
+                (opInfo[i].mopType == MOP_TYPE_FP) &&
+                (opInfo[i].opTypeC == OOT_REG);
 `endif
+            schedulerEntry[i].srcFlagsValid = opInfo[i].readFlags;
             schedulerEntry[i].opSrc = opSrc[i];
             schedulerEntry[i].opDst = opDst[i];
 
@@ -260,6 +268,7 @@ module DispatchStage(
 `ifdef RSD_MARCH_FP_PIPE
             schedulerEntry[i].srcPtrRegC = pipeReg[i].srcIssueQueuePtrRegC;
 `endif
+            schedulerEntry[i].srcPtrFlags = pipeReg[i].srcIssueQueuePtrFlags;
 
             //
             // Output to scheduler

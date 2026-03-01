@@ -109,8 +109,8 @@ module PreDecodeStage(
             debug.pdReg[i].valid = pipeReg[i].valid;
             debug.pdReg[i].sid = pipeReg[i].sid;
 `ifdef RSD_FUNCTIONAL_SIMULATION
-            debug.pdReg[i].aluCode = microOps[i][1].operand.intOp.aluCode;
-            debug.pdReg[i].opType = microOps[i][1].mopSubType.intType;
+            debug.pdReg[i].aluCode = microOps[i][0].operand.intOp.aluCode;
+            debug.pdReg[i].opType = microOps[i][0].mopSubType.intType;
 `endif
         end
 `endif

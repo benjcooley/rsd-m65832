@@ -108,6 +108,11 @@ typedef struct packed // ActiveListEntry
     // and recovering a RMT.
     PRegNumPath  phyPrevDstRegNum;
 
+    // Flags register tracking (separate domain)
+    logic writeFlags;
+    PFlagRegNumPath phyFlagsDstRegNum;
+    PFlagRegNumPath phyPrevFlagsDstRegNum;
+
     IssueQueueIndexPath prevDependIssueQueuePtr;
     
 } ActiveListEntry;
@@ -347,6 +352,7 @@ typedef struct packed // SchedulerEntry
 `ifdef RSD_MARCH_FP_PIPE
     logic srcRegValidC;
 `endif
+    logic srcFlagsValid;
     OpSrc opSrc;
     OpDst opDst;
 
@@ -356,6 +362,7 @@ typedef struct packed // SchedulerEntry
 `ifdef RSD_MARCH_FP_PIPE
     IssueQueueIndexPath srcPtrRegC;
 `endif
+    IssueQueueIndexPath srcPtrFlags;
 } SchedulerEntry;
 
 
@@ -389,6 +396,8 @@ typedef struct packed // SchedulerRegPtr
 typedef struct packed // SchedulerDstTag
 {
     SchedulerRegTag  regTag;
+    // Optional secondary destination tag (e.g. flags + GPR dual-write ops).
+    SchedulerRegTag  regTag2;
 } SchedulerDstTag;
 
 // For the source operands of an op.

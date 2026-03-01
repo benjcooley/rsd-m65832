@@ -51,25 +51,52 @@ typedef logic [VEC_WIDTH-1:0] VectorPath;
 // --- Register File
 //
 
-// Logical register number width
-localparam LSCALAR_NUM = 32;
+// Logical integer register count: R0-R63 (64 registers, 6-bit addressing)
+localparam LSCALAR_NUM = 64;
 localparam LSCALAR_NUM_BIT_WIDTH = $clog2( LSCALAR_NUM );
 typedef logic [LSCALAR_NUM_BIT_WIDTH-1:0] LScalarRegNumPath;
 
-// Physical register number width
+// Physical integer register count
 localparam PSCALAR_NUM = CONF_PSCALAR_NUM;
 localparam PSCALAR_NUM_BIT_WIDTH = $clog2( PSCALAR_NUM );
 typedef logic [PSCALAR_NUM_BIT_WIDTH-1:0] PScalarRegNumPath;
 
-// Logical fp register number width
-localparam LSCALAR_FP_NUM = 32;
+// Logical FP register count: F0-F15 (16 registers, 4-bit addressing)
+localparam LSCALAR_FP_NUM = 16;
 localparam LSCALAR_FP_NUM_BIT_WIDTH = $clog2( LSCALAR_FP_NUM );
 typedef logic [LSCALAR_FP_NUM_BIT_WIDTH-1:0] LScalarFPRegNumPath;
 
-// Physical fp register number width
+// Physical FP register count
 localparam PSCALAR_FP_NUM = CONF_PSCALAR_FP_NUM;
 localparam PSCALAR_FP_NUM_BIT_WIDTH = $clog2( PSCALAR_FP_NUM );
 typedef logic [PSCALAR_FP_NUM_BIT_WIDTH-1:0] PScalarFPRegNumPath;
+
+// === NZVC Flags Register (separate rename domain) ===
+// The flags register has its own small physical register file and free list,
+// independent of the 64-entry GPR rename table. This avoids widening
+// LRegNumPath and keeps the main rename/free-list paths unchanged.
+localparam LREG_FLAGS = LSCALAR_NUM; // logical index 64 (conceptual only)
+
+// Physical flags register file: small, 4-bit-wide entries
+localparam PFLAG_NUM = 32;
+localparam PFLAG_NUM_BIT_WIDTH = $clog2(PFLAG_NUM);
+typedef logic [PFLAG_NUM_BIT_WIDTH-1:0] PFlagRegNumPath;
+
+localparam FLAG_WIDTH = 4; // N, Z, V, C
+typedef logic [FLAG_WIDTH-1:0] FlagPath;
+
+// Free list for flags physical registers
+// Must be even for DistributedMultiBankRAM bank alignment (BANK_NUM=2)
+localparam FLAG_FREE_LIST_ENTRY_NUM = PFLAG_NUM - 2;
+localparam FLAG_FREE_LIST_ENTRY_NUM_BIT_WIDTH = $clog2(FLAG_FREE_LIST_ENTRY_NUM);
+typedef logic [FLAG_FREE_LIST_ENTRY_NUM_BIT_WIDTH:0] FlagFreeListCountPath;
+
+// Physical flags register data (valid + NZVC)
+localparam PFLAG_DATA_WIDTH = FLAG_WIDTH + 1;
+typedef struct packed {
+    logic valid;
+    FlagPath flags;
+} PFlagDataPath;
 
 // Logical general register ( scalar int register + fp register) number width
 `ifdef RSD_MARCH_FP_PIPE
@@ -189,12 +216,16 @@ typedef struct packed // OpSrc
 `ifdef RSD_MARCH_FP_PIPE
     PRegNumPath phySrcRegNumC;
 `endif
+    logic readFlags;
+    PFlagRegNumPath phySrcFlagsRegNum;
 } OpSrc;
 
 typedef struct packed // OpDst
 {
     logic writeReg;
     PRegNumPath phyDstRegNum;
+    logic writeFlags;
+    PFlagRegNumPath phyFlagsDstRegNum;
 } OpDst;
 
 
@@ -209,11 +240,11 @@ typedef struct packed
 } PRegDataPath;
 
 //
-// --- Shifter
+// --- Shifter / Immediate data
 //
 localparam SHIFTER_WIDTH = 12;
-localparam RISCV_SHIFTER_WIDTH = 30;
-typedef logic [ RISCV_SHIFTER_WIDTH-1:0 ] ShifterPath;
+localparam SHIFTER_IMM_WIDTH = 31;
+typedef logic [SHIFTER_IMM_WIDTH-1:0] ShifterPath;
 
 localparam SHIFT_AMOUNT_BIT_SIZE = 5;
 typedef logic [SHIFT_AMOUNT_BIT_SIZE-1:0] ShiftAmountPath;

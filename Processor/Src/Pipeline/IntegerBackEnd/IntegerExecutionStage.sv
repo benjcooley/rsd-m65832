@@ -18,31 +18,24 @@ import FetchUnitTypes::*;
 import RenameLogicTypes::*;
 
 
-function automatic logic IsConditionEnabledInt( CondCode cond, DataPath opA, DataPath opB );
-    logic ce;
-    SignedDataPath signedOpA;
-    SignedDataPath signedOpB;
-
-    signedOpA = opA;
-    signedOpB = opB;
-
-    case( cond )
-        COND_EQ:  ce = ( opA == opB );
-        COND_NE:  ce = ( opA != opB );
-        COND_LT:  ce = ( signedOpA < signedOpB );
-        COND_LTU: ce = ( opA < opB );
-        COND_GE:  ce = ( signedOpA >= signedOpB );
-        COND_GEU: ce = ( opA >= opB );
-
-        // AL 常時（無条件） -
-        COND_AL: ce = 1;
-
-        default:
-            ce = 1;
+// m65832 flag-based condition evaluation.
+// flagsData[3:0] = {N, Z, V, C} from the physical register holding NZVC.
+// Until Phase 4 plumbs the flags register, only COND_AL (unconditional) works correctly.
+function automatic logic IsConditionEnabledFlags(CondCode cond, DataPath flagsData);
+    M65_Flags flags;
+    flags = M65_Flags'(flagsData[3:0]);
+    case (cond)
+        COND_EQ: return flags.Z;
+        COND_NE: return !flags.Z;
+        COND_CS: return flags.C;
+        COND_CC: return !flags.C;
+        COND_MI: return flags.N;
+        COND_PL: return !flags.N;
+        COND_VS: return flags.V;
+        COND_VC: return !flags.V;
+        COND_AL: return 1'b1;
+        default: return 1'b0;
     endcase
-
-    return ce;
-
 endfunction
 
 //
@@ -100,6 +93,7 @@ module IntegerExecutionStage(
 
     // ALU
     DataPath aluDataOut [ INT_ISSUE_WIDTH ];
+    FlagPath aluFlagsOut [ INT_ISSUE_WIDTH ];
     IntALU_Code aluCode [ INT_ISSUE_WIDTH ];
 
     for ( genvar i = 0; i < INT_ISSUE_WIDTH; i++ ) begin : BlockALU
@@ -107,13 +101,14 @@ module IntegerExecutionStage(
             .aluCode ( aluCode[i] ),
             .fuOpA_In ( fuOpA[i].data ),
             .fuOpB_In ( fuOpB[i].data ),
-            .aluDataOut ( aluDataOut[i] )
+            .aluDataOut ( aluDataOut[i] ),
+            .aluFlagsOut ( aluFlagsOut[i] )
         );
     end
 
     // Shifter
     ShiftOperandType shiftOperandType [ INT_ISSUE_WIDTH ];
-    RISCV_IntOperandImmShift shiftImmIn [ INT_ISSUE_WIDTH ];
+    M65_IntOperandImm shiftImmIn [ INT_ISSUE_WIDTH ];
     DataPath shiftDataOut [ INT_ISSUE_WIDTH ];
     logic shiftCarryOut [ INT_ISSUE_WIDTH ];
 
@@ -121,7 +116,7 @@ module IntegerExecutionStage(
         Shifter shifter(
             .shiftOperandType( shiftOperandType[i] ),
             .shiftType( shiftImmIn[i].shiftType ),
-            .immShiftAmount( shiftImmIn[i].shift ),
+            .immShiftAmount( shiftImmIn[i].imm[SHIFT_AMOUNT_BIT_SIZE-1:0] ),
             .regShiftAmount( fuOpB[i][SHIFT_AMOUNT_BIT_SIZE-1:0] ),
             .dataIn( fuOpA[i].data ),
             .carryIn( 1'b0 ),
@@ -140,6 +135,8 @@ module IntegerExecutionStage(
 
     IntOpSubInfo intSubInfo[ INT_ISSUE_WIDTH ];
     BrOpSubInfo  brSubInfo[ INT_ISSUE_WIDTH ];
+    PFlagDataPath fuOpFlags [ INT_ISSUE_WIDTH ];
+    PFlagDataPath flagsResult [ INT_ISSUE_WIDTH ];
 
     always_comb begin
         stall = ctrl.backEnd.stall;
@@ -159,16 +156,19 @@ module IntegerExecutionStage(
                         iqData[i].activeListPtr
                         );
 
-            // オペランド
+            // Operands (data)
             fuOpA[i] = ( pipeReg[i].bCtrl.rA.valid ? bypass.intSrcRegDataOutA[i] : pipeReg[i].operandA );
             fuOpB[i] = ( pipeReg[i].bCtrl.rB.valid ? bypass.intSrcRegDataOutB[i] : pipeReg[i].operandB );
 
-            // Condition
-            isCondEnabled[i] = IsConditionEnabledInt( iqData[i].cond, fuOpA[i].data, fuOpB[i].data );
+            // Flags operand (via bypass or register file read)
+            fuOpFlags[i] = ( pipeReg[i].bCtrl.rFlags.valid ? bypass.intSrcFlagDataOut[i] : pipeReg[i].operandFlags );
+
+            // Condition evaluation using NZVC flags from the flags register
+            isCondEnabled[i] = IsConditionEnabledFlags(iqData[i].cond, {28'b0, fuOpFlags[i].flags});
 
             // Shifter
             shiftOperandType[i] = intSubInfo[i].shiftType;
-            shiftImmIn[i] = intSubInfo[i].shiftIn;
+            shiftImmIn[i] = M65_IntOperandImm'(intSubInfo[i].shiftIn);
 
             // ALU
             aluCode[i] = intSubInfo[i].aluCode;
@@ -184,18 +184,36 @@ module IntegerExecutionStage(
             default: /* select */  dataOut[i].data = ( isCondEnabled[i] ? fuOpA[i].data : fuOpB[i].data );
             endcase
 
+            // Compute NZVC flags result
+            unique case ( iqData[i].opType )
+            INT_MOP_TYPE_ALU: begin
+                flagsResult[i].flags = aluFlagsOut[i];
+            end
+            INT_MOP_TYPE_SHIFT: begin
+                flagsResult[i].flags[3] = shiftDataOut[i][DATA_WIDTH-1]; // N
+                flagsResult[i].flags[2] = (shiftDataOut[i] == '0);       // Z
+                flagsResult[i].flags[1] = 1'b0;                          // V (shifts: no overflow)
+                flagsResult[i].flags[0] = shiftCarryOut[i];              // C
+            end
+            default: begin
+                flagsResult[i].flags = '0;
+            end
+            endcase
+
             // If invalid registers are read, regValid is negated and this op must be replayed.
             regValid[i] =
                 (intSubInfo[i].operandTypeA != OOT_REG || fuOpA[i].valid ) &&
-                (intSubInfo[i].operandTypeB != OOT_REG || fuOpB[i].valid );
+                (intSubInfo[i].operandTypeB != OOT_REG || fuOpB[i].valid ) &&
+                (!iqData[i].opSrc.readFlags || fuOpFlags[i].valid );
             dataOut[i].valid = regValid[i];
-
+            flagsResult[i].valid = regValid[i];
 
             //
             // --- Bypass
             //
             bypass.intCtrlIn[i] = pipeReg[i].bCtrl;
             bypass.intDstRegDataOut[i] = dataOut[i];
+            bypass.intDstFlagDataOut[i] = flagsResult[i];
 
             //
             // --- 分岐
@@ -215,15 +233,24 @@ module IntegerExecutionStage(
             // The address of a branch.
             brResult[i].brAddr = ToPC_FromAddr(pc[i]);
 
-            // ターゲットアドレスの計算
-            if( brTaken[i] ) begin
-                brResult[i].nextAddr =
-                    ToPC_FromAddr(
-                        (iqData[i].opType == INT_MOP_TYPE_BR) ?  
-                            (pc[i] + ExtendBranchDisplacement(brSubInfo[i].brDisp) ) : // 方向分岐 
-                            (AddJALR_TargetOffset(fuOpA[i].data, brSubInfo[i].brDisp) // レジスタ間接分岐 
-                        ) 
+            // m65832 branch target computation
+            if (brTaken[i]) begin
+                if (iqData[i].opType == INT_MOP_TYPE_BR) begin
+                    // B21: PC + 4 + signext(off21) << 2
+                    brResult[i].nextAddr = ToPC_FromAddr(
+                        pc[i] + PC_OPERAND_OFFSET + ExtendBranchDisplacement(brSubInfo[i].brDisp)
                     );
+                end
+                else if (brSubInfo[i].operandTypeA == OOT_REG) begin
+                    // Register-indirect (JMP_REG, JSR_REG, RTS)
+                    brResult[i].nextAddr = ToPC_FromAddr(
+                        {fuOpA[i].data[31:2], 2'b00}
+                    );
+                end
+                else begin
+                    // Absolute jump (JMP_ABS, JSR_ABS) - target from decode prediction
+                    brResult[i].nextAddr = bPred[i].predAddr;
+                end
             end
             else begin
                 brResult[i].nextAddr = ToPC_FromAddr(pc[i] + INSN_BYTE_WIDTH);
@@ -265,6 +292,7 @@ module IntegerExecutionStage(
                 (stall || clear || port.rst || flush[i]) ? FALSE : pipeReg[i].valid;
 
             nextStage[i].dataOut = dataOut[i];
+            nextStage[i].flagsOut = flagsResult[i];
 
             nextStage[i].brResult    = brResult[i];
             nextStage[i].brMissPred  = predMiss[i];

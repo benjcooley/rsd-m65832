@@ -15,20 +15,23 @@ import SchedulerTypes::*;
 module WakeupLogic (
     WakeupSelectIF.WakeupLogic port
 );
+    localparam int DUAL_DISPATCH_WIDTH = DISPATCH_WIDTH * 2;
+    localparam int DUAL_WAKEUP_WIDTH = WAKEUP_WIDTH * 2;
+
     // Source status of dispatched instructions.
     logic dispatchedSrcRegValid  [ DISPATCH_WIDTH ][ ISSUE_QUEUE_SRC_REG_NUM ];
 
     PRegNumPath  dispatchedSrcRegNum  [ DISPATCH_WIDTH ][ ISSUE_QUEUE_SRC_REG_NUM ];
 
     // Destination status of dispatched instructions.
-    logic dispatchedDstRegValid  [ DISPATCH_WIDTH ];
-
-    PRegNumPath  dispatchedDstRegNum  [ DISPATCH_WIDTH ];
+    logic dispatchedDstRegValid  [ DUAL_DISPATCH_WIDTH ];
+    logic dispatchForReady [ DUAL_DISPATCH_WIDTH ];
+    PRegNumPath  dispatchedDstRegNum  [ DUAL_DISPATCH_WIDTH ];
 
     // Destination status of wokeup instructions.
-    logic wakeupDstRegValid  [ WAKEUP_WIDTH ];
-
-    PRegNumPath  wakeupDstRegNum  [ WAKEUP_WIDTH ];
+    logic wakeupDstRegValid  [ DUAL_WAKEUP_WIDTH ];
+    logic wakeupForReady [ DUAL_WAKEUP_WIDTH ];
+    PRegNumPath  wakeupDstRegNum  [ DUAL_WAKEUP_WIDTH ];
 
     // Connection between srcCAM and readyBitTbl
     logic dispatchedSrcRegReady[ DISPATCH_WIDTH ][ ISSUE_QUEUE_SRC_REG_NUM ];
@@ -54,15 +57,17 @@ module WakeupLogic (
     ReadyBitTable #(
         .SRC_OP_NUM( ISSUE_QUEUE_SRC_REG_NUM ),
         .REG_NUM_BIT_WIDTH( PREG_NUM_BIT_WIDTH ),
-        .ENTRY_NUM( PREG_NUM )
+        .ENTRY_NUM( PREG_NUM ),
+        .WAKEUP_PORT_NUM( DUAL_WAKEUP_WIDTH ),
+        .DISPATCH_PORT_NUM( DUAL_DISPATCH_WIDTH )
     ) regReadyBitTbl (
         .clk( port.clk ),
         .rst( port.rst ),
         .rstStart( port.rstStart ),
-        .wakeup( port.wakeup ),
+        .wakeup( wakeupForReady ),
         .wakeupDstValid( wakeupDstRegValid ),
         .wakeupDstRegNum( wakeupDstRegNum ),
-        .dispatch( port.write ),
+        .dispatch( dispatchForReady ),
         .dispatchedDstValid( dispatchedDstRegValid ),
         .dispatchedDstRegNum( dispatchedDstRegNum ),
         .dispatchedSrcValid( dispatchedSrcRegValid ),
@@ -73,8 +78,12 @@ module WakeupLogic (
     always_comb begin
         // Dispatch
         for ( int i = 0; i < DISPATCH_WIDTH; i++ ) begin
-            dispatchedDstRegValid[i]   = port.writeDstTag[i].regTag.valid;
-            dispatchedDstRegNum[i]     = port.writeDstTag[i].regTag.num;
+            dispatchedDstRegValid[i*2]   = port.writeDstTag[i].regTag.valid;
+            dispatchedDstRegNum[i*2]     = port.writeDstTag[i].regTag.num;
+            dispatchForReady[i*2]        = port.write[i];
+            dispatchedDstRegValid[i*2+1] = port.writeDstTag[i].regTag2.valid;
+            dispatchedDstRegNum[i*2+1]   = port.writeDstTag[i].regTag2.num;
+            dispatchForReady[i*2+1]      = port.write[i];
 
             for ( int j = 0; j < ISSUE_QUEUE_SRC_REG_NUM; j++ ) begin
                 dispatchedSrcRegNum[i][j] = port.writeSrcTag[i].regTag[j].num;
@@ -84,8 +93,12 @@ module WakeupLogic (
 
         // Wake up
         for ( int i = 0; i < WAKEUP_WIDTH; i++ ) begin
-            wakeupDstRegValid[i]   = port.wakeupDstTag[i].regTag.valid;
-            wakeupDstRegNum[i]     = port.wakeupDstTag[i].regTag.num;
+            wakeupDstRegValid[i*2]   = port.wakeupDstTag[i].regTag.valid;
+            wakeupDstRegNum[i*2]     = port.wakeupDstTag[i].regTag.num;
+            wakeupForReady[i*2]      = port.wakeup[i];
+            wakeupDstRegValid[i*2+1] = port.wakeupDstTag[i].regTag2.valid;
+            wakeupDstRegNum[i*2+1]   = port.wakeupDstTag[i].regTag2.num;
+            wakeupForReady[i*2+1]    = port.wakeup[i];
         end
     end
 

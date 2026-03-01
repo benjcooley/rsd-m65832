@@ -253,10 +253,16 @@ module RenameStage(
             renameLogic.readRegA[i] = opInfo[i].opTypeA == OOT_REG;
             renameLogic.readRegB[i] = opInfo[i].opTypeB == OOT_REG;
 `ifdef RSD_MARCH_FP_PIPE
-            renameLogic.readRegC[i] = opInfo[i].opTypeC == OOT_REG;
+            // Only FP ops consume source-C; keep non-FP paths from
+            // accidentally creating a bogus third-source dependency.
+            renameLogic.readRegC[i] =
+                (opInfo[i].mopType == MOP_TYPE_FP) &&
+                (opInfo[i].opTypeC == OOT_REG);
 `endif
 
             renameLogic.writeReg[i] = opInfo[i].writeReg;
+            renameLogic.writeFlags[i] = opInfo[i].writeFlags;
+            renameLogic.readFlags[i] = opInfo[i].readFlags;
 
             // to WAT
             renameLogic.watWriteRegFromPipeReg[i] = opInfo[i].writeReg && update[i];
@@ -277,6 +283,10 @@ module RenameStage(
             nextStage[i].phyDstRegNum = renameLogic.phyDstReg[i];
             nextStage[i].phyPrevDstRegNum = renameLogic.phyPrevDstReg[i];
 
+            // Flags rename
+            nextStage[i].phySrcFlagsRegNum = renameLogic.phySrcFlags[i];
+            nextStage[i].phyFlagsDstRegNum = renameLogic.phyDstFlags[i];
+            nextStage[i].phyPrevFlagsDstRegNum = renameLogic.phyPrevDstFlags[i];
         end
 
         // Source pointer for a matrix scheduler.
@@ -287,6 +297,7 @@ module RenameStage(
 `ifdef RSD_MARCH_FP_PIPE
             nextStage[i].srcIssueQueuePtrRegC = renameLogic.srcIssueQueuePtrRegC[i];
 `endif
+            nextStage[i].srcIssueQueuePtrFlags = renameLogic.srcIssueQueuePtrFlags[i];
         end
 
 
@@ -306,6 +317,11 @@ module RenameStage(
             alEntry[i].phyDstRegNum = nextStage[i].phyDstRegNum;
             alEntry[i].logDstRegNum = opInfo[i].operand.intOp.dstRegNum;
             alEntry[i].writeReg = opInfo[i].writeReg;
+
+            // Flags tracking for commit/recovery
+            alEntry[i].writeFlags = opInfo[i].writeFlags;
+            alEntry[i].phyFlagsDstRegNum = nextStage[i].phyFlagsDstRegNum;
+            alEntry[i].phyPrevFlagsDstRegNum = nextStage[i].phyPrevFlagsDstRegNum;
             alEntry[i].isLoad = isLoad[i];
             alEntry[i].isStore = isStore[i];
             alEntry[i].isBranch = isBranch[i];

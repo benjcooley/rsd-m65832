@@ -92,6 +92,12 @@ module IntegerRegisterWriteStage(
             registerFile.intDstRegNum[i] = iqData[i].opDst.phyDstRegNum;
             registerFile.intDstRegData[i] = pipeReg[i].dataOut;
 
+            // Flags register file write
+            registerFile.intDstFlagWE[i] =
+                update[i] && iqData[i].opDst.writeFlags;
+            registerFile.intDstFlagNum[i] = iqData[i].opDst.phyFlagsDstRegNum;
+            registerFile.intDstFlagData[i] = pipeReg[i].flagsOut;
+
             //
             // Active list
             //

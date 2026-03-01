@@ -140,12 +140,18 @@ typedef struct packed // DispatchStageRegPath
     PRegNumPath phyDstRegNum;
     PRegNumPath phyPrevDstRegNum;  // For releasing a register.
 
+    // Flags rename (separate domain)
+    PFlagRegNumPath phySrcFlagsRegNum;
+    PFlagRegNumPath phyFlagsDstRegNum;
+    PFlagRegNumPath phyPrevFlagsDstRegNum;
+
     // Source pointer for a matrix scheduler.
     IssueQueueIndexPath srcIssueQueuePtrRegA;
     IssueQueueIndexPath srcIssueQueuePtrRegB;
 `ifdef RSD_MARCH_FP_PIPE
     IssueQueueIndexPath srcIssueQueuePtrRegC;
 `endif
+    IssueQueueIndexPath srcIssueQueuePtrFlags;
 
     IssueQueueIndexPath issueQueuePtr;
     ActiveListIndexPath activeListPtr;
@@ -187,6 +193,7 @@ typedef struct packed // IntegerExecutionStageRegPath
     // register read out
     PRegDataPath operandA;
     PRegDataPath operandB;
+    PFlagDataPath operandFlags;
 
     // Bypass control
     BypassControll bCtrl;
@@ -204,6 +211,7 @@ typedef struct packed // IntegerRegisterWriteStageRegPath
     IntIssueQueueEntry intQueueData;
 
     PRegDataPath dataOut;   // Result of ALU/shifter/Load
+    PFlagDataPath flagsOut; // NZVC flags result (valid when writeFlags)
 
     logic brMissPred;
     BranchResult brResult;  // Result of branch

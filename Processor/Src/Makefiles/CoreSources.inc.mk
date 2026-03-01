@@ -8,8 +8,6 @@
 RSD_SRC_CFG = \
 	+define+RSD_MARCH_INT_ISSUE_WIDTH=2 \
 	+define+RSD_MARCH_FP_PIPE \
-	+define+RSD_ENABLE_ZBA \
-	+define+RSD_ENABLE_ZICOND \
 
 #	+define+RSD_MARCH_UNIFIED_LDST_MEM_PIPE \
 #	+define+RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE \
@@ -41,6 +39,8 @@ TYPES = \
 # CORE_MODULES specifies files that defines the RSD core.
 # The order of the files in this section is arbitrary.
 CORE_MODULES = \
+	Decoder/Decoder.sv \
+	Decoder/DecodedBranchResolver.sv \
 	Core.sv \
 	Pipeline/FetchStage/NextPCStage.sv \
 	Pipeline/FetchStage/NextPCStageIF.sv \
@@ -125,8 +125,6 @@ CORE_MODULES = \
 	RenameLogic/RMT.sv \
 	RenameLogic/RetirementRMT.sv \
 	RenameLogic/RenameLogicCommitter.sv \
-	Decoder/Decoder.sv \
-	Decoder/DecodedBranchResolver.sv \
 	FetchUnit/BTB.sv \
 	FetchUnit/BranchPredictor.sv \
 	FetchUnit/Gshare.sv \

@@ -35,6 +35,19 @@ module RenameLogic (
     ScalarFPFreeListCountPath scalarFPFreeListCount;
 `endif
 
+    // --- Flags rename domain ---
+    logic allocateFlagReg [ RENAME_WIDTH ];
+    PFlagRegNumPath allocatedFlagRegNum [ RENAME_WIDTH ];
+    logic releaseFlagReg [ COMMIT_WIDTH ];
+    PFlagRegNumPath releasedFlagRegNum [ COMMIT_WIDTH ];
+    FlagFreeListCountPath flagFreeListCount;
+
+    // Single-entry flags RMT: maps LREG_FLAGS -> physical flag register
+    PFlagRegNumPath flagsPhyReg;
+    PFlagRegNumPath nextFlagsPhyReg;
+    IssueQueueIndexPath flagsIQPtr;
+    IssueQueueIndexPath nextFlagsIQPtr;
+
     ActiveListEntry alReadData [ COMMIT_WIDTH ];
 
     //
@@ -79,6 +92,41 @@ module RenameLogic (
         .pushedData( releasedPhyScalarFPRegNum )
     );
 `endif
+
+    // Flags free list (separate small pool: PFLAG_NUM entries, PFLAG_NUM_BIT_WIDTH wide)
+    MultiWidthFreeList #(
+        .SIZE( FLAG_FREE_LIST_ENTRY_NUM ),
+        .ENTRY_BIT_SIZE( PFLAG_NUM_BIT_WIDTH ),
+        .PUSH_WIDTH( COMMIT_WIDTH ),
+        .POP_WIDTH( RENAME_WIDTH ),
+        .INITIAL_LENGTH( FLAG_FREE_LIST_ENTRY_NUM )
+    ) flagFreeList (
+        .clk( port.clk ),
+        .rst( port.rst ),
+        .rstStart( port.rstStart ),
+        .count( flagFreeListCount ),
+
+        .pop( allocateFlagReg ),
+        .poppedData( allocatedFlagRegNum ),
+
+        .push( releaseFlagReg ),
+        .pushedData( releasedFlagRegNum )
+    );
+
+    // Flags RMT register (single-entry: LREG_FLAGS -> physical flag register)
+    // Updated when any instruction in the rename group writes flags.
+    // Initial physical flag register = FLAG_FREE_LIST_ENTRY_NUM (first entry
+    // beyond the free list, same convention as the GPR RMT init).
+    always_ff @(posedge port.clk) begin
+        if (port.rst) begin
+            flagsPhyReg <= PFlagRegNumPath'(FLAG_FREE_LIST_ENTRY_NUM);
+            flagsIQPtr  <= '0;
+        end
+        else begin
+            flagsPhyReg <= nextFlagsPhyReg;
+            flagsIQPtr  <= nextFlagsIQPtr;
+        end
+    end
 
     // Index address for recoverying the RMT by copying from the retirement RMT.
     LRegNumPath rmtRecoveryIndex;
@@ -155,13 +203,15 @@ module RenameLogic (
         // Empty flag.
 `ifdef RSD_MARCH_FP_PIPE
         port.allocatable =
-            !inRecoveryRMT &&   // In a recovery mode, the front-end is stalled.
+            !inRecoveryRMT &&
             (scalarFreeListCount >= RENAME_WIDTH) &&
-            (scalarFPFreeListCount >= RENAME_WIDTH);
+            (scalarFPFreeListCount >= RENAME_WIDTH) &&
+            (flagFreeListCount >= RENAME_WIDTH);
 `else
         port.allocatable =
-            !inRecoveryRMT &&   // In a recovery mode, the front-end is stalled.
-            (scalarFreeListCount >= RENAME_WIDTH);
+            !inRecoveryRMT &&
+            (scalarFreeListCount >= RENAME_WIDTH) &&
+            (flagFreeListCount >= RENAME_WIDTH);
 `endif
 
         // Allocation from the free lists.
@@ -174,6 +224,8 @@ module RenameLogic (
 `else
             allocatePhyScalarReg[i] = allocatePhyReg[i];
 `endif
+            // Flags free list allocation
+            allocateFlagReg[i] = port.updateRMT[i] && port.writeFlags[i];
         end
 
         // Release to the free lists.
@@ -188,6 +240,50 @@ module RenameLogic (
             releasePhyScalarReg[i] = port.releaseReg[i];
 `endif
             releasedPhyScalarRegNum[i] = port.phyReleasedReg[i].regNum;
+
+            // Flags free list release
+            releaseFlagReg[i] = port.releaseFlagReg[i];
+            releasedFlagRegNum[i] = port.phyReleasedFlagReg[i];
+        end
+
+        // --- Flags rename: source lookup and destination allocation ---
+        // Default: no change to flags RMT
+        nextFlagsPhyReg = flagsPhyReg;
+        nextFlagsIQPtr  = flagsIQPtr;
+
+        for ( int i = 0; i < RENAME_WIDTH; i++ ) begin
+            // All flag-reading instructions get the current flags physical register
+            port.phySrcFlags[i] = nextFlagsPhyReg;
+            port.srcIssueQueuePtrFlags[i] = nextFlagsIQPtr;
+
+            // Previous flags destination (for freeing at commit)
+            port.phyPrevDstFlags[i] = nextFlagsPhyReg;
+
+            // Newly allocated flags physical register
+            port.phyDstFlags[i] = allocatedFlagRegNum[i];
+
+            // Update flags RMT for flag-writing instructions (in-group forwarding)
+            if (port.updateRMT[i] && port.writeFlags[i]) begin
+                nextFlagsPhyReg = allocatedFlagRegNum[i];
+                nextFlagsIQPtr  = port.watWriteIssueQueuePtrFromPipeReg[i];
+            end
+        end
+
+        // Recover the single-entry flags map from the active list.
+        if (inRecoveryRMT) begin
+            nextFlagsIQPtr = '0;
+            if (RECOVERY_FROM_RRMT) begin
+                // RRMT currently tracks only GPR/FP maps; keep architectural flags map.
+                nextFlagsPhyReg = FLAG_FREE_LIST_ENTRY_NUM;
+            end
+            else begin
+                // Apply popped entries in order and restore the pre-write mapping.
+                for (int i = 0; i < COMMIT_WIDTH; i++) begin
+                    if (i < activeList.popTailNum && alReadData[i].writeFlags) begin
+                        nextFlagsPhyReg = alReadData[i].phyPrevFlagsDstRegNum;
+                    end
+                end
+            end
         end
 
         // Write control of RMTs.

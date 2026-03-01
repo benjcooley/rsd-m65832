@@ -41,6 +41,7 @@ typedef struct packed {
 `ifdef RSD_MARCH_FP_PIPE
     BypassSelect rC;
 `endif
+    BypassSelect rFlags;
 } BypassControll;
 
 endpackage

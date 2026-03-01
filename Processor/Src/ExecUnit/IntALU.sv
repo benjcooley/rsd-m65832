@@ -52,6 +52,7 @@ endmodule
 module IntALU(
     output
         DataPath aluDataOut,
+        FlagPath aluFlagsOut,
     input 
         IntALU_Code aluCode,
         DataPath fuOpA_In,
@@ -154,7 +155,13 @@ module IntALU(
 
         endcase
 
-        aluDataOut   = opDst.data;
+        aluDataOut = opDst.data;
+
+        // NZVC flags: {N, Z, V, C}
+        aluFlagsOut[3] = opDst.data[DATA_WIDTH-1];       // N = sign bit
+        aluFlagsOut[2] = (opDst.data == '0);              // Z = result is zero
+        aluFlagsOut[1] = adderOutOverflow;                // V = signed overflow
+        aluFlagsOut[0] = opDst.carry;                     // C = carry out
     end
     
 

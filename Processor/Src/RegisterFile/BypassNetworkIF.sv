@@ -20,12 +20,16 @@ interface BypassNetworkIF(input logic clk, rst, rstStart);
     PRegNumPath intPhySrcRegNumA [ INT_ISSUE_WIDTH ];
     PRegNumPath intPhySrcRegNumB [ INT_ISSUE_WIDTH ];
     PRegNumPath intPhyDstRegNum  [ INT_ISSUE_WIDTH ];
+    PFlagRegNumPath intPhySrcFlagNum [ INT_ISSUE_WIDTH ];
+    PFlagRegNumPath intPhyDstFlagNum [ INT_ISSUE_WIDTH ];
 
     
     logic intReadRegA [ INT_ISSUE_WIDTH ];
     logic intReadRegB [ INT_ISSUE_WIDTH ];
+    logic intReadFlags [ INT_ISSUE_WIDTH ];
 
     logic intWriteReg  [ INT_ISSUE_WIDTH ];
+    logic intWriteFlags [ INT_ISSUE_WIDTH ];
     
     BypassControll intCtrlOut [ INT_ISSUE_WIDTH ];
     
@@ -34,8 +38,10 @@ interface BypassNetworkIF(input logic clk, rst, rstStart);
     
     PRegDataPath intSrcRegDataOutA  [ INT_ISSUE_WIDTH ];
     PRegDataPath intSrcRegDataOutB  [ INT_ISSUE_WIDTH ];
+    PFlagDataPath intSrcFlagDataOut [ INT_ISSUE_WIDTH ];
 
     PRegDataPath intDstRegDataOut  [ INT_ISSUE_WIDTH ];
+    PFlagDataPath intDstFlagDataOut [ INT_ISSUE_WIDTH ];
 
     //
     // --- Complex Integer Pipeline
@@ -129,9 +135,13 @@ interface BypassNetworkIF(input logic clk, rst, rstStart);
         intPhySrcRegNumA,
         intPhySrcRegNumB,
         intPhyDstRegNum,
+        intPhySrcFlagNum,
+        intPhyDstFlagNum,
         intReadRegA,
         intReadRegB,
+        intReadFlags,
         intWriteReg,
+        intWriteFlags,
 `ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
         complexPhySrcRegNumA,
         complexPhySrcRegNumB,
@@ -174,6 +184,7 @@ interface BypassNetworkIF(input logic clk, rst, rstStart);
         rst,
         intCtrlIn,
         intDstRegDataOut,
+        intDstFlagDataOut,
 `ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
         complexCtrlIn,
         complexDstRegDataOut,
@@ -187,6 +198,7 @@ interface BypassNetworkIF(input logic clk, rst, rstStart);
     output
         intSrcRegDataOutA,
         intSrcRegDataOutB,
+        intSrcFlagDataOut,
 `ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
         complexSrcRegDataOutA,
         complexSrcRegDataOutB,
@@ -210,18 +222,24 @@ interface BypassNetworkIF(input logic clk, rst, rstStart);
         intPhySrcRegNumA,
         intPhySrcRegNumB,
         intPhyDstRegNum,
+        intPhySrcFlagNum,
+        intPhyDstFlagNum,
         intReadRegA,
         intReadRegB,
-        intWriteReg
+        intReadFlags,
+        intWriteReg,
+        intWriteFlags
     );
     
     modport IntegerExecutionStage(
     input
         intSrcRegDataOutA,
         intSrcRegDataOutB,
+        intSrcFlagDataOut,
     output 
         intCtrlIn,
-        intDstRegDataOut
+        intDstRegDataOut,
+        intDstFlagDataOut
     );
     
 `ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE

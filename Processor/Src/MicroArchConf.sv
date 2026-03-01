@@ -21,10 +21,10 @@ localparam CONF_COMMIT_WIDTH = 2;
 
 
 // --- Back-end
-// The number of physical registers
-// INT and FP must be the same at present.
-localparam CONF_PSCALAR_NUM = 64;
-localparam CONF_PSCALAR_FP_NUM = 64;
+// The number of physical registers.
+// Must be larger than the logical register count to have free-list headroom.
+localparam CONF_PSCALAR_NUM = 128;    // 128 - 64 logical = 64 free
+localparam CONF_PSCALAR_FP_NUM = 128; // 128 - 16 logical = 112 free (must equal PSCALAR_NUM)
 
 // The number of issue-queue entries
 localparam CONF_ISSUE_QUEUE_ENTRY_NUM = 16;

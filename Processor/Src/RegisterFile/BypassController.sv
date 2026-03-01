@@ -105,6 +105,42 @@ module BypassController(
         return ret;
     endfunction
 
+    function automatic BypassSelect SelectIntReg( 
+    input
+        PRegNumPath regNum,
+        logic read,
+        BypassCtrlOperand intEX [ INT_ISSUE_WIDTH ],
+        BypassCtrlOperand intWB [ INT_ISSUE_WIDTH ]
+    );
+        BypassSelect ret;
+        ret.valid = FALSE;
+        ret.stg = BYPASS_STAGE_INT_EX;
+        ret.lane.intLane = 0;
+        ret.lane.memLane = 0;
+        // Not implemented 
+        ret.lane.complexLane = 0; 
+`ifdef RSD_MARCH_FP_PIPE
+        ret.lane.fpLane = 0; 
+`endif
+
+        for ( int i = 0; i < INT_ISSUE_WIDTH; i++ ) begin
+            if ( read && intEX[i].writeReg && regNum == intEX[i].dstRegNum ) begin
+                ret.valid = TRUE;
+                ret.stg = BYPASS_STAGE_INT_EX;
+                ret.lane.intLane = i;
+                break;
+            end
+            if ( read && intWB[i].writeReg && regNum == intWB[i].dstRegNum ) begin
+                ret.valid = TRUE;
+                ret.stg = BYPASS_STAGE_INT_WB;
+                ret.lane.intLane = i;
+                break;
+            end
+        end
+
+        return ret;
+    endfunction
+
     logic clk, rst;
     
     assign clk = port.clk;
@@ -119,6 +155,9 @@ module BypassController(
     BypassCtrlOperand intRR [ INT_ISSUE_WIDTH ];
     BypassCtrlOperand intEX [ INT_ISSUE_WIDTH ];
     BypassCtrlOperand intWB [ INT_ISSUE_WIDTH ];
+    BypassCtrlOperand intRR_Flags [ INT_ISSUE_WIDTH ];
+    BypassCtrlOperand intEX_Flags [ INT_ISSUE_WIDTH ];
+    BypassCtrlOperand intWB_Flags [ INT_ISSUE_WIDTH ];
     BypassCtrlOperand memRR [ LOAD_ISSUE_WIDTH ];
     BypassCtrlOperand memEX [ LOAD_ISSUE_WIDTH ];
     BypassCtrlOperand memMT [ LOAD_ISSUE_WIDTH ];
@@ -128,6 +167,8 @@ module BypassController(
     for ( genvar i = 0; i < INT_ISSUE_WIDTH; i++ ) begin : stgInt
         BypassCtrlStage stgIntRR( clk, rst, ctrl.backEnd, intRR[i], intEX[i] );
         BypassCtrlStage stgIntEX( clk, rst, ctrl.backEnd, intEX[i], intWB[i] );
+        BypassCtrlStage stgIntRR_Flags( clk, rst, ctrl.backEnd, intRR_Flags[i], intEX_Flags[i] );
+        BypassCtrlStage stgIntEX_Flags( clk, rst, ctrl.backEnd, intEX_Flags[i], intWB_Flags[i] );
     end
 
     for ( genvar i = 0; i < LOAD_ISSUE_WIDTH; i++ ) begin : stgMem
@@ -150,9 +191,18 @@ module BypassController(
         for ( int i = 0; i < INT_ISSUE_WIDTH; i++ ) begin
             intRR[i].dstRegNum = port.intPhyDstRegNum[i];
             intRR[i].writeReg  = port.intWriteReg[i];
+            intRR_Flags[i].dstRegNum = PRegNumPath'(port.intPhyDstFlagNum[i]);
+            intRR_Flags[i].writeReg  = port.intWriteFlags[i];
 
             intBypassCtrl[i].rA   = SelectReg ( port.intPhySrcRegNumA[i], port.intReadRegA[i], intEX, intWB, memMA, memWB );
             intBypassCtrl[i].rB   = SelectReg ( port.intPhySrcRegNumB[i], port.intReadRegB[i], intEX, intWB, memMA, memWB );
+            intBypassCtrl[i].rFlags =
+                SelectIntReg(
+                    PRegNumPath'(port.intPhySrcFlagNum[i]),
+                    port.intReadFlags[i],
+                    intEX_Flags,
+                    intWB_Flags
+                );
         end
         port.intCtrlOut = intBypassCtrl;
 

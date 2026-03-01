@@ -116,7 +116,7 @@ module TestMain;
     DataPath regData[ LREG_NUM ];
 
     integer commitNumInLastCycle;
-    integer numCommittedRISCV_Op;
+    integer numCommittedInsn;
     integer numCommittedMicroOp;
     real realTmp;
 
@@ -175,7 +175,7 @@ module TestMain;
 
         // init variable
         dumpFlush = FALSE;
-        numCommittedRISCV_Op = 0;
+        numCommittedInsn = 0;
         numCommittedMicroOp = 0;
 
         // settings
@@ -276,7 +276,7 @@ module TestMain;
                 if ( debugRegister.cmReg[i].commit ) begin
                     numCommittedMicroOp += 1;
                     if ( debugRegister.cmReg[i].opId.mid == 0 ) begin
-                        numCommittedRISCV_Op += 1;
+                        numCommittedInsn += 1;
                     end
                 end
             end
@@ -305,11 +305,11 @@ module TestMain;
         $display("Num of branch prediction misses: %d", debugRegister.perfCounter.numBranchPredMiss);
         $display("Num of branch prediction misses detected on decode: %d", debugRegister.perfCounter.numBranchPredMissDetectedOnDecode);
 
-        $display( "Num of committed RISC-V-ops: %d", numCommittedRISCV_Op );
+        $display( "Num of committed instructions: %d", numCommittedInsn );
         $display( "Num of committed micro-ops: %d", numCommittedMicroOp );
         if ( cycle != 0 ) begin
             realTmp = cycle;
-            $display( "IPC (RISC-V instruction): %f", numCommittedRISCV_Op / realTmp );
+            $display( "IPC (instruction): %f", numCommittedInsn / realTmp );
             $display( "IPC (micro-op): %f", numCommittedMicroOp / realTmp );
         end
         $display("Elapsed cycles: %d", cycle);

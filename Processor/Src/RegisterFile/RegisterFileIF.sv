@@ -22,6 +22,13 @@ interface RegisterFileIF( input logic clk, rst, rstStart );
     logic intDstRegWE  [ INT_ISSUE_WIDTH ];
     PRegNumPath intDstRegNum  [ INT_ISSUE_WIDTH ];    
     PRegDataPath intDstRegData  [ INT_ISSUE_WIDTH ];
+
+    /* NZVC Flags Register (separate 4-bit-wide file) */
+    PFlagRegNumPath intSrcFlagNum [ INT_ISSUE_WIDTH ];
+    PFlagDataPath   intSrcFlagData [ INT_ISSUE_WIDTH ];
+    logic           intDstFlagWE [ INT_ISSUE_WIDTH ];
+    PFlagRegNumPath intDstFlagNum [ INT_ISSUE_WIDTH ];
+    PFlagDataPath   intDstFlagData [ INT_ISSUE_WIDTH ];
     
 `ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
     /* Complex Integer Register Read */
@@ -80,11 +87,15 @@ interface RegisterFileIF( input logic clk, rst, rstStart );
         rstStart,
         intSrcRegNumA,
         intSrcRegNumB,
+        intSrcFlagNum,
         memSrcRegNumA,
         memSrcRegNumB,
         intDstRegWE,
         intDstRegNum,
         intDstRegData,
+        intDstFlagWE,
+        intDstFlagNum,
+        intDstFlagData,
 `ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
         complexSrcRegNumA,
         complexSrcRegNumB,
@@ -106,6 +117,7 @@ interface RegisterFileIF( input logic clk, rst, rstStart );
     output
         intSrcRegDataA,
         intSrcRegDataB,
+        intSrcFlagData,
 `ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
         complexSrcRegDataA,
         complexSrcRegDataB,
@@ -124,16 +136,21 @@ interface RegisterFileIF( input logic clk, rst, rstStart );
     input
         intSrcRegDataA,
         intSrcRegDataB,
+        intSrcFlagData,
     output
         intSrcRegNumA,
-        intSrcRegNumB
+        intSrcRegNumB,
+        intSrcFlagNum
     );
     
     modport IntegerRegisterWriteStage(
     output
         intDstRegWE,
         intDstRegNum,
-        intDstRegData
+        intDstRegData,
+        intDstFlagWE,
+        intDstFlagNum,
+        intDstFlagData
     );
 
 `ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE    

@@ -3,6 +3,7 @@
 /Processor/Src/Verification/TestCode/C/*/serial.out.txt
 /Processor/Src/Verification/TestCode/Asm/*/reg.out.hex
 /Processor/Src/Verification/TestCode/Asm/*/serial.out.txt
+/Processor/Src/Verification/TestCode/Asm/*/reg_trace.csv
 
 /Processor/Tools/QEMU_SimDriver/GDB_CommandFile
 /Processor/Tools/SetEnv/MySetEnv.bat

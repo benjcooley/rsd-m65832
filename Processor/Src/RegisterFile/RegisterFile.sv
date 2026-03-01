@@ -59,6 +59,38 @@ module RegisterFile(
         .rv( srcRegData )
     );
 
+    // NZVC Flags register file (separate 4-bit-wide entries, same index space)
+    parameter FLAG_READ_NUM  = INT_ISSUE_WIDTH;
+    parameter FLAG_WRITE_NUM = INT_ISSUE_WIDTH;
+
+    logic           flagWE      [ FLAG_WRITE_NUM ];
+    PFlagRegNumPath flagDstNum  [ FLAG_WRITE_NUM ];
+    PFlagDataPath   flagDstData [ FLAG_WRITE_NUM ];
+    PFlagRegNumPath flagSrcNum  [ FLAG_READ_NUM ];
+    PFlagDataPath   flagSrcData [ FLAG_READ_NUM ];
+
+    DistributedMultiPortRAM #(
+        .ENTRY_NUM( PFLAG_NUM ),
+        .ENTRY_BIT_SIZE( $bits(PFlagDataPath) ),
+        .READ_NUM( FLAG_READ_NUM ),
+        .WRITE_NUM( FLAG_WRITE_NUM )
+    ) phyFlagReg (
+        .clk( port.clk ),
+        .we( flagWE ),
+        .wa( flagDstNum ),
+        .wv( flagDstData ),
+        .ra( flagSrcNum ),
+        .rv( flagSrcData )
+    );
+
+    PFlagRegNumPath flagRstIndex;
+    always_ff @( posedge port.clk ) begin
+        if (port.rstStart)
+            flagRstIndex <= 0;
+        else
+            flagRstIndex <= flagRstIndex + FLAG_WRITE_NUM;
+    end
+
     // - Initialization logic
     PRegNumPath regRstIndex;
     always_ff @( posedge port.clk ) begin
@@ -82,6 +114,13 @@ module RegisterFile(
             srcRegNum[i*2+1] = port.intSrcRegNumB[i].regNum;
             port.intSrcRegDataA[i] = srcRegData[i*2  ];
             port.intSrcRegDataB[i] = srcRegData[i*2+1];
+
+            // Flags register file wiring
+            flagWE     [i] = port.intDstFlagWE[i];
+            flagDstNum [i] = port.intDstFlagNum[i];
+            flagDstData[i] = port.intDstFlagData[i];
+            flagSrcNum [i] = port.intSrcFlagNum[i];
+            port.intSrcFlagData[i] = flagSrcData[i];
         end
 `ifndef RSD_MARCH_UNIFIED_MULDIV_MEM_PIPE
         for ( int i = 0; i < COMPLEX_ISSUE_WIDTH; i++ ) begin
@@ -141,6 +180,12 @@ module RegisterFile(
                 dstRegNum [i] = regRstIndex + i;
                 dstRegData[i].data = 'h00000000;
                 dstRegData[i].valid = TRUE;
+            end
+            for (int i = 0; i < FLAG_WRITE_NUM; i++) begin
+                flagWE     [i] = TRUE;
+                flagDstNum [i] = flagRstIndex + i;
+                flagDstData[i].flags = '0;
+                flagDstData[i].valid = TRUE;
             end
         end
     end

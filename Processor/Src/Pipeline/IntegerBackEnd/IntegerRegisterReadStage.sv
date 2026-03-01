@@ -18,25 +18,29 @@ import PipelineTypes::*;
 import DebugTypes::*;
 
 //
-// --- Immediate
+// --- Immediate expansion (m65832)
 //
-function automatic DataPath RISCV_OpImm(
-    RISCV_IntOperandImmShift intOperandImm
+function automatic DataPath M65_OpImm(
+    ShifterPath shiftIn
 );
-
-    // Todo: optimize
-    DataPath result;
-    case( intOperandImm.immType )
-        //RISCV_IMM_I : begin
-        default : begin
-            result   = { {12{intOperandImm.imm[19]}}, intOperandImm.imm };
+    M65_IntOperandImm p;
+    p = M65_IntOperandImm'(shiftIn);
+    case (p.immType)
+        M65_IMM_I13: begin
+            // imm[19:0] pre-extended by decoder (13->20 bits)
+            return { {12{p.imm[19]}}, p.imm };
         end
-        RISCV_IMM_U : begin
-            result   = { intOperandImm.imm, 12'h0 };
+        M65_IMM_U20: begin
+            return { p.imm, 12'h0 };
         end
-    endcase // immType
-    return result;
-endfunction : RISCV_OpImm
+        M65_IMM_SHFT: begin
+            return { 27'b0, p.imm[4:0] };
+        end
+        default: begin
+            return '0;
+        end
+    endcase
+endfunction
 
 
 //
@@ -125,26 +129,27 @@ module IntegerRegisterReadStage(
             //
             registerFile.intSrcRegNumA[i] = opSrc[i].phySrcRegNumA;
             registerFile.intSrcRegNumB[i] = opSrc[i].phySrcRegNumB;
+            registerFile.intSrcFlagNum[i] = opSrc[i].phySrcFlagsRegNum;
 
             //
             // To the bypass network.
-            // ストールやフラッシュの制御は，Bypass モジュールの内部で
-            // コントローラの信号を参照して行われている
             //
             bypass.intPhySrcRegNumA[i] = opSrc[i].phySrcRegNumA;
             bypass.intPhySrcRegNumB[i] = opSrc[i].phySrcRegNumB;
+            bypass.intPhySrcFlagNum[i] = opSrc[i].phySrcFlagsRegNum;
 
             bypass.intWriteReg[i]  = opDst[i].writeReg & pipeReg[i].valid;
             bypass.intPhyDstRegNum[i] = opDst[i].phyDstRegNum;
+            bypass.intWriteFlags[i] = opDst[i].writeFlags & pipeReg[i].valid;
+            bypass.intPhyDstFlagNum[i] = opDst[i].phyFlagsDstRegNum;
             bypass.intReadRegA[i] = ( intSubInfo[i].operandTypeA == OOT_REG );
             bypass.intReadRegB[i] = ( intSubInfo[i].operandTypeB == OOT_REG );
+            bypass.intReadFlags[i] = opSrc[i].readFlags;
 
             //
             // --- オペランド選択
             //
-            immOut[i] = RISCV_OpImm(
-                .intOperandImm( intSubInfo[i].shiftIn )
-            );
+            immOut[i] = M65_OpImm(intSubInfo[i].shiftIn);
             operandA[i].data = SelectOperandIntReg(
                 intSubInfo[i].operandTypeA,
                 registerFile.intSrcRegDataA[i].data,
@@ -178,9 +183,10 @@ module IntegerRegisterReadStage(
             nextStage[i].valid =
                 (stall || clear || port.rst || flush[i]) ? FALSE : pipeReg[i].valid;
 
-            // レジスタ値&フラグ
+            // Register values & flags
             nextStage[i].operandA = operandA[i];
             nextStage[i].operandB = operandB[i];
+            nextStage[i].operandFlags = registerFile.intSrcFlagData[i];
 
             // Issue queue data
             nextStage[i].intQueueData = pipeReg[i].intQueueData;
